@@ -1,0 +1,6 @@
+Flask
+speechmatics-batch
+google-generativeai
+httpx
+Werkzeug
+python-dotenv
