@@ -1,0 +1,12 @@
+run = ["flask", "run", "--host=0.0.0.0"]
+language = "python3"
+
+[packager]
+features = ["poetry"]
+
+[packager.features.poetry]
+lock-file = "poetry.lock"
+pyproject-toml = "pyproject.toml"
+
+[env]
+FLASK_APP = "app.py"
