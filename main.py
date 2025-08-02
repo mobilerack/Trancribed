@@ -1,7 +1,7 @@
 import os
 from flask import Flask, request, jsonify, render_template
 from werkzeug.utils import secure_filename
-import speechmatics.client  # Fontos: a sima 'client'-et importáljuk
+import speechmatics.client # Ez a jó, 'c' betűvel
 import google.generativeai as genai
 import httpx # Ezt meghagyjuk az URL-es verzióhoz
 
