@@ -39,25 +39,37 @@ document.addEventListener('DOMContentLoaded', () => {
         statusDiv.className = `alert alert-${type}`;
     }
     
-    function toggleSpinner(spinner, show) {
-        spinner.classList.toggle('d-none', !show);
+    function toggleSpinnersAndButtons(show) {
         const buttons = [transcribeBtn, transcribeUrlBtn, translateBtn];
         buttons.forEach(btn => { if (btn) btn.disabled = show; });
+        
+        // A spinnereket külön kezeljük, hogy a megfelelő jelenjen meg
+        if (show) {
+            if (event.target.id === 'transcribeButton' || event.target.id === 'transcribeUrlButton') {
+                transcribeSpinner.classList.remove('d-none');
+            } else if (event.target.id === 'translateButton') {
+                translateSpinner.classList.remove('d-none');
+            }
+        } else {
+            transcribeSpinner.classList.add('d-none');
+            translateSpinner.classList.add('d-none');
+        }
     }
-    
 
     async function startTranscription() {
         const file = document.getElementById('transcribeFile').files[0];
         const language = document.getElementById('sourceLanguageSelect').value;
         const apiKey = localStorage.getItem('speechmaticsApiKey');
 
-        if (!file || !apiKey) {
-            updateStatus('Hiba: Válassz fájlt és add meg a Speechmatics API kulcsot!', 'danger');
-            return;
+        if (!apiKey) {
+            return updateStatus('Hiba: A Speechmatics API kulcs megadása kötelező!', 'danger');
+        }
+        if (!file) {
+            return updateStatus('Hiba: Válassz egy fájlt az átíráshoz!', 'danger');
         }
 
-        toggleSpinner(transcribeSpinner, true);
-        updateStatus('Fájl feltöltése és feldolgozás indítása...', 'info');
+        toggleSpinnersAndButtons(true);
+        updateStatus('Fájl feltöltése és átírása... Ez a fájl hosszától függően több percig is tarthat.', 'info');
 
         const formData = new FormData();
         formData.append('file', file);
@@ -67,12 +79,15 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             const response = await fetch('/start-transcription', { method: 'POST', body: formData });
             const data = await response.json();
-            if (!response.ok) throw new Error(data.error || 'Ismeretlen szerverhiba.');
-            updateStatus(`Átírás elindítva (Job ID: ${data.job_id}). Állapot lekérdezése...`, 'info');
-            pollStatus(data.job_id, apiKey);
+            if (!response.ok) throw new Error(data.error || `Szerverhiba: ${response.status}`);
+            
+            updateStatus('Átírás sikeresen befejeződött!', 'success');
+            srtEditor.value = data.srt_content;
+            
         } catch (error) {
             updateStatus(`Hiba: ${error.message}`, 'danger');
-            toggleSpinner(transcribeSpinner, false);
+        } finally {
+            toggleSpinnersAndButtons(false);
         }
     }
 
@@ -81,13 +96,15 @@ document.addEventListener('DOMContentLoaded', () => {
         const language = document.getElementById('sourceLanguageSelect').value;
         const apiKey = localStorage.getItem('speechmaticsApiKey');
 
-        if (!audioUrl || !apiKey) {
-            updateStatus('Hiba: Add meg a médiafájl URL-jét és a Speechmatics API kulcsot!', 'danger');
-            return;
+        if (!apiKey) {
+            return updateStatus('Hiba: A Speechmatics API kulcs megadása kötelező!', 'danger');
+        }
+        if (!audioUrl) {
+            return updateStatus('Hiba: Illessz be egy URL-t az átíráshoz!', 'danger');
         }
 
-        toggleSpinner(transcribeSpinner, true);
-        updateStatus('Átírás indítása URL-ből...', 'info');
+        toggleSpinnersAndButtons(true);
+        updateStatus('Átírás indítása URL-ből... Ez a fájl hosszától függően több percig is tarthat.', 'info');
 
         try {
             const response = await fetch('/start-transcription-from-url', {
@@ -96,39 +113,16 @@ document.addEventListener('DOMContentLoaded', () => {
                 body: JSON.stringify({ url: audioUrl, apiKey: apiKey, language: language })
             });
             const data = await response.json();
-            if (!response.ok) throw new Error(data.error || 'Ismeretlen szerverhiba.');
-            updateStatus(`Átírás elindítva URL-ből (Job ID: ${data.job_id}). Állapot lekérdezése...`, 'info');
-            pollStatus(data.job_id, apiKey);
+            if (!response.ok) throw new Error(data.error || `Szerverhiba: ${response.status}`);
+            
+            updateStatus('Átírás URL-ből sikeresen befejeződött!', 'success');
+            srtEditor.value = data.srt_content;
+
         } catch (error) {
             updateStatus(`Hiba: ${error.message}`, 'danger');
-            toggleSpinner(transcribeSpinner, false);
+        } finally {
+            toggleSpinnersAndButtons(false);
         }
-    }
-
-    function pollStatus(jobId, apiKey) {
-        const interval = setInterval(async () => {
-            try {
-                const response = await fetch(`/transcription-status/${jobId}?apiKey=${apiKey}`);
-                const data = await response.json();
-
-                if (data.status === 'done') {
-                    clearInterval(interval);
-                    updateStatus('Átírás sikeresen befejeződött!', 'success');
-                    srtEditor.value = data.srt_content;
-                    toggleSpinner(transcribeSpinner, false);
-                } else if (data.status === 'error' || data.status === 'rejected') {
-                    clearInterval(interval);
-                    updateStatus(`Hiba: ${data.error || 'A feladat sikertelen.'}`, 'danger');
-                    toggleSpinner(transcribeSpinner, false);
-                } else {
-                    updateStatus(`Feldolgozás folyamatban... Állapot: ${data.status}`, 'warning');
-                }
-            } catch (error) {
-                clearInterval(interval);
-                updateStatus(`Hiba az állapot lekérdezése közben: ${error.message}`, 'danger');
-                toggleSpinner(transcribeSpinner, false);
-            }
-        }, 5000);
     }
     
     async function startTranslation() {
@@ -137,12 +131,14 @@ document.addEventListener('DOMContentLoaded', () => {
         const videoFile = document.getElementById('videoContextFile').files[0];
         const targetLanguage = document.getElementById('targetLanguageSelect').value;
 
-        if (!srtText || !geminiApiKey) {
-            updateStatus('Hiba: Az átirat mező nem lehet üres és a Gemini API kulcs megadása kötelező!', 'danger');
-            return;
+        if (!geminiApiKey) {
+            return updateStatus('Hiba: A Gemini API kulcs megadása kötelező!', 'danger');
+        }
+        if (!srtText) {
+            return updateStatus('Hiba: Az átirat mező nem lehet üres!', 'danger');
         }
         
-        toggleSpinner(translateSpinner, true);
+        toggleSpinnersAndButtons(true);
         updateStatus('Fordítás folyamatban a Gemini segítségével...', 'info');
 
         const formData = new FormData();
@@ -156,13 +152,13 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             const response = await fetch('/translate', { method: 'POST', body: formData });
             const data = await response.json();
-            if (!response.ok) throw new Error(data.error || 'Ismeretlen hiba a fordítás során.');
+            if (!response.ok) throw new Error(data.error || `Szerverhiba: ${response.status}`);
             srtEditor.value = data.translated_text;
             updateStatus('A fordítás sikeresen elkészült!', 'success');
         } catch (error) {
             updateStatus(`Hiba a fordítás során: ${error.message}`, 'danger');
         } finally {
-            toggleSpinner(translateSpinner, false);
+            toggleSpinnersAndButtons(false);
         }
     }
 
