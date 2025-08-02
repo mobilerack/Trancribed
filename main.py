@@ -2,7 +2,7 @@ import os
 import time
 from flask import Flask, request, jsonify, render_template
 from werkzeug.utils import secure_filename
-from speechmatics import client
+from speechmatics.batch import BatchClient # CORRECTED IMPORT
 import google.generativeai as genai
 import httpx
 
@@ -45,10 +45,12 @@ def handle_start_transcription():
                     "language": language
                 }
             }
+            # The new library uses separate calls for submit and wait
             job_id = client.submit_job(
                 audio=filepath,
                 config=conf,
             )
+            # We wait for the result using the job_id
             transcript = client.wait_for_job_result(job_id, transcription_format="srt")
             return jsonify({'status': 'done', 'srt_content': transcript})
 
@@ -144,4 +146,3 @@ Lefordított SRT:
 # --- Application Start ---
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080)
-
