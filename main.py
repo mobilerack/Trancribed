@@ -2,7 +2,7 @@ import os
 import time
 from flask import Flask, request, jsonify, render_template
 from werkzeug.utils import secure_filename
-from speechmatics.batch import BatchClient # CORRECTED IMPORT
+from speechmatics import client
 import google.generativeai as genai
 import httpx
 
