@@ -1,84 +1,58 @@
-import os
-import time  # Időzítés importálása a szimulációhoz
-from flask import Flask, request, render_template, Response
+# Keresd meg a `main.py` fájlodban a `/start-transcription-from-url` végpontot,
+# és cseréld le a teljes funkciót erre a javított verzióra.
 
-# A szükséges Speechmatics modulok importálása
-from speechmatics.batch_client import BatchClient
-from speechmatics.models import ConnectionSettings, TranscriptionConfig
-
-# Flask alkalmazás létrehozása
-app = Flask(__name__)
-
-
-@app.route("/")
-def index():
-    """ A főoldal, ami betölti a 'templates/index.html' fájlt. """
-    return render_template("index.html")
-
-
-@app.route("/transcribe", methods=["POST"])
-def transcribe_audio():
+@app.route('/start-transcription-from-url', methods=['POST'])
+def start_transcription_from_url():
     """
-    Fogadja az űrlap adatait és egy eseményfolyamot (logot) küld vissza a böngészőnek.
+    Fogad egy URL-t, és elindítja az átírást.
+    JAVÍTVA: Az URL-t a Speechmatics által elvárt szótár formátumban adja tovább.
     """
-    # A 'yield' kulcsszó miatt ez a funkció egy "generátor" lesz.
-    # Minden 'yield' egy újabb adatcsomagot küld a nyitva tartott kapcsolaton.
-    def generate_log_stream():
-        try:
-            # --- 1. Adatok beolvasása és validálása ---
-            api_key = request.form.get('api_key')
-            audio_file = request.files.get('file')
-            
-            yield "data: Napló indítása...\n\n"
-            time.sleep(0.5)
+    try:
+        # Adatok beolvasása a kérésből
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "Érvénytelen kérés formátum."}), 400
 
-            if not api_key:
-                yield "data: Hiba: Az API kulcs megadása kötelező.\n\n"
-                return  # Leállítjuk a folyamatot
+        url = data.get('url')
+        api_key = data.get('apiKey')
+        language = data.get('language', 'hu') # Alapértelmezett nyelv, ha nincs megadva
 
-            if not audio_file:
-                yield "data: Hiba: Nincs feltöltött fájl.\n\n"
-                return
+        if not all([url, api_key]):
+            return jsonify({"error": "Hiányzó URL vagy API kulcs."}), 400
 
-            yield f"data: Fájl fogadva: {audio_file.filename}\n\n"
-            time.sleep(0.5)
+        # Kapcsolati beállítások létrehozása
+        settings = ConnectionSettings(
+            url="https://asr.api.speechmatics.com/v2",
+            auth_token=api_key
+        )
 
-            # --- 2. Kapcsolódás a Speechmaticshez ---
-            yield "data: Kapcsolódás a Speechmatics API-hoz...\n\n"
-            time.sleep(0.5)
+        # Átírási konfiguráció
+        transcription_config = {
+            "language": language
+        }
+        
+        # JAVÍTÁS ITT:
+        # A `fetch_data` szótárba csomagoljuk az URL-t, ahogy az API elvárja.
+        fetch_data = {
+            "url": url
+        }
 
-            settings = ConnectionSettings(
-                url="https://asr.api.speechmatics.com/v2",
-                auth_token=api_key,
+        with BatchClient(settings) as client:
+            job_id = client.submit_job(
+                audio=fetch_data,  # Itt már a helyes formátumot adjuk át
+                transcription_config=transcription_config,
             )
 
-            with BatchClient(settings) as client:
-                yield "data: Kapcsolat sikeres. Feladat elküldése...\n\n"
-                time.sleep(1)
+        return jsonify({"job_id": job_id}), 200
 
-                config = TranscriptionConfig(language="hu")
+    except HTTPStatusError as e:
+        # Részletesebb hibaüzenet a Speechmatics-től
+        error_details = e.response.json().get("detail") or "Ismeretlen API hiba"
+        app.logger.error(f"Speechmatics API hiba (HTTPStatusError): {error_details}")
+        return jsonify({"error": error_details}), e.response.status_code
+    except Exception as e:
+        # Általános szerverhiba naplózása
+        app.logger.error(f"Ismeretlen hiba az URL átírás közben: {e}")
+        return jsonify({"error": "Ismeretlen szerveroldali hiba történt."}), 500
 
-                job_id = client.submit_job(
-                    audio=audio_file,
-                    transcription_config=config,
-                )
-
-                yield f"data: Feladat sikeresen elküldve! Job ID: {job_id}\n\n"
-                time.sleep(0.5)
-                yield "data: KÉSZ! A folyamat befejeződött.\n\n"
-
-        except Exception as e:
-            # Hiba esetén a pontos hibaüzenetet is beírjuk a logba
-            app.logger.error(f"Speechmatics API hiba: {e}")
-            yield f"data: Hiba történt: {e}\n\n"
-            yield "data: A folyamat hibával leállt.\n\n"
-
-    # A Flask Response objektumot a generátorral hozzuk létre.
-    # A 'text/event-stream' mimetype jelzi a böngészőnek, hogy SSE kapcsolatról van szó.
-    return Response(generate_log_stream(), mimetype='text/event-stream')
-
-
-# Alkalmazás indítása helyi fejlesztéshez
-if __name__ == "__main__":
-    app.run(debug=True)
 
