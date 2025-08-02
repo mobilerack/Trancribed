@@ -35,8 +35,8 @@ def handle_start_transcription():
     file.save(filepath)
 
     try:
-        settings = {'auth_token': api_key}
-        with BatchClient(settings) as client:
+        # A HELYES KLIENS INICIALIZÁLÁS
+        with BatchClient(api_key=api_key) as client:
             conf = {
                 "type": "transcription",
                 "transcription_config": {
@@ -69,8 +69,8 @@ def handle_start_transcription_from_url():
     language = data['language']
     
     try:
-        settings = {'auth_token': api_key}
-        with BatchClient(settings) as client:
+        # A HELYES KLIENS INICIALIZÁLÁS
+        with BatchClient(api_key=api_key) as client:
             conf = {
                 "type": "transcription",
                 "transcription_config": {
@@ -91,7 +91,6 @@ def handle_start_transcription_from_url():
 # --- Translate (Gemini) ---
 @app.route('/translate', methods=['POST'])
 def handle_translate():
-    # ... (A Gemini rész nem változik, maradhat)
     if 'geminiApiKey' not in request.form or 'srtText' not in request.form or 'targetLanguage' not in request.form:
         return jsonify({'error': 'Missing data (geminiApiKey, srtText, targetLanguage).'}), 400
     
@@ -137,7 +136,6 @@ Lefordított SRT:
     finally:
         if video_filepath and os.path.exists(video_filepath):
             os.remove(video_filepath)
-
 
 # --- Application Start ---
 if __name__ == '__main__':
