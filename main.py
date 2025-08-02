@@ -39,7 +39,6 @@ def start_transcription():
 
         settings = ConnectionSettings(url="https://asr.api.speechmatics.com/v2", auth_token=api_key)
         
-        # A konfigurációt egy szótárban adjuk meg
         config = {
             "type": "transcription",
             "transcription_config": {
@@ -80,9 +79,6 @@ def start_transcription_from_url():
 
         settings = ConnectionSettings(url="https://asr.api.speechmatics.com/v2", auth_token=api_key)
         
-        # VÉGLEGES JAVÍTÁS ITT:
-        # A teljes konfigurációt egyetlen szótárba kell helyezni.
-        # Az URL a 'fetch_data' kulcs alá kerül.
         full_config = {
             "type": "transcription",
             "transcription_config": {
@@ -94,9 +90,11 @@ def start_transcription_from_url():
         }
 
         with BatchClient(settings) as client:
-            # URL-es kérésnél NEM kell az 'audio' paraméter,
-            # mert az információ már a konfigurációban benne van.
+            # HARMADIK, VÉGLEGES JAVÍTÁS ITT:
+            # Az 'audio' paramétert megadjuk, de None értékkel, jelezve,
+            # hogy a konfigurációban lévő 'fetch_data'-t kell használni.
             job_id = client.submit_job(
+                audio=None,
                 transcription_config=full_config
             )
         return jsonify({"job_id": job_id}), 200
@@ -195,5 +193,4 @@ def translate():
 # --- Alkalmazás indítása ---
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5001)
-
 
