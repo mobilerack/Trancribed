@@ -2,7 +2,7 @@ import os
 import time
 from flask import Flask, request, jsonify, render_template
 from werkzeug.utils import secure_filename
-from speechmatics.client import BatchClient # EZ A HELYES IMPORT
+from speechmatics.client import BatchClient
 import google.generativeai as genai
 import httpx
 
@@ -12,10 +12,12 @@ UPLOAD_FOLDER = 'uploads'
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
+
 # --- Main Page ---
 @app.route('/')
 def index():
     return render_template('index.html')
+
 
 # --- Transcribe from FILE ---
 @app.route('/start-transcription', methods=['POST'])
@@ -35,7 +37,7 @@ def handle_start_transcription():
     file.save(filepath)
 
     try:
-        # A HELYES KLIENS INICIALIZÁLÁS
+        # CORRECTED INITIALIZATION
         with BatchClient(api_key=api_key) as client:
             conf = {
                 "type": "transcription",
@@ -69,7 +71,7 @@ def handle_start_transcription_from_url():
     language = data['language']
     
     try:
-        # A HELYES KLIENS INICIALIZÁLÁS
+        # CORRECTED INITIALIZATION
         with BatchClient(api_key=api_key) as client:
             conf = {
                 "type": "transcription",
@@ -135,7 +137,7 @@ Lefordított SRT:
         return jsonify({'error': f"Gemini API error: {str(e)}"}), 500
     finally:
         if video_filepath and os.path.exists(video_filepath):
-            os.remove(video_filepath)
+            os.remove(filepath)
 
 # --- Application Start ---
 if __name__ == '__main__':
