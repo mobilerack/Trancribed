@@ -13,10 +13,9 @@ import google.generativeai as genai
 
 # --- Flask alkalmazás beállítása ---
 app = Flask(__name__)
-# Ideiglenes fájlok tárolására szolgáló mappa
 UPLOAD_FOLDER = 'temp_uploads'
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
 
 # --- Főoldal ---
@@ -29,10 +28,7 @@ def index():
 
 @app.route('/start-transcription', methods=['POST'])
 def start_transcription():
-    """
-    Fájl feltöltését és az átírás indítását kezeli.
-    Figyelem: Nagy fájlok esetén memória problémát okozhat a Render ingyenes csomagján.
-    """
+    """ Fájl feltöltését és az átírás indítását kezeli. """
     try:
         api_key = request.form.get('apiKey')
         language = request.form.get('language', 'hu')
@@ -42,12 +38,19 @@ def start_transcription():
             return jsonify({"error": "Hiányzó API kulcs, nyelv vagy fájl."}), 400
 
         settings = ConnectionSettings(url="https://asr.api.speechmatics.com/v2", auth_token=api_key)
-        transcription_config = {"language": language}
+        
+        # A konfigurációt egy szótárban adjuk meg
+        config = {
+            "type": "transcription",
+            "transcription_config": {
+                "language": language
+            }
+        }
 
         with BatchClient(settings) as client:
             job_id = client.submit_job(
                 audio=file,
-                transcription_config=transcription_config,
+                transcription_config=config,
             )
         return jsonify({"job_id": job_id}), 200
 
@@ -62,10 +65,7 @@ def start_transcription():
 
 @app.route('/start-transcription-from-url', methods=['POST'])
 def start_transcription_from_url():
-    """
-    Fogad egy URL-t, és elindítja az átírást.
-    JAVÍTVA: Az URL-t a Speechmatics által elvárt szótár formátumban adja tovább.
-    """
+    """ Fogad egy URL-t, és elindítja az átírást a helyes formátumban. """
     try:
         data = request.get_json()
         if not data:
@@ -79,15 +79,25 @@ def start_transcription_from_url():
             return jsonify({"error": "Hiányzó URL vagy API kulcs."}), 400
 
         settings = ConnectionSettings(url="https://asr.api.speechmatics.com/v2", auth_token=api_key)
-        transcription_config = {"language": language}
         
-        # JAVÍTÁS ITT: Az URL-t szótárba csomagoljuk
-        fetch_data = {"url": url}
+        # VÉGLEGES JAVÍTÁS ITT:
+        # A teljes konfigurációt egyetlen szótárba kell helyezni.
+        # Az URL a 'fetch_data' kulcs alá kerül.
+        full_config = {
+            "type": "transcription",
+            "transcription_config": {
+                "language": language
+            },
+            "fetch_data": {
+                "url": url
+            }
+        }
 
         with BatchClient(settings) as client:
+            # URL-es kérésnél NEM kell az 'audio' paraméter,
+            # mert az információ már a konfigurációban benne van.
             job_id = client.submit_job(
-                audio=fetch_data,
-                transcription_config=transcription_config,
+                transcription_config=full_config
             )
         return jsonify({"job_id": job_id}), 200
 
@@ -102,9 +112,7 @@ def start_transcription_from_url():
 
 @app.route('/transcription-status/<job_id>')
 def transcription_status(job_id):
-    """
-    Lekérdezi egy adott átírási feladat állapotát és eredményét.
-    """
+    """ Lekérdezi egy adott átírási feladat állapotát és eredményét. """
     try:
         api_key = request.args.get('apiKey')
         if not api_key:
@@ -113,16 +121,14 @@ def transcription_status(job_id):
         settings = ConnectionSettings(url="https://asr.api.speechmatics.com/v2", auth_token=api_key)
 
         with BatchClient(settings) as client:
-            job_status = client.check_job_status(job_id)
-            status = job_status.get("status")
+            job_details = client.check_job_status(job_id)
+            status = job_details.get("job", {}).get("status")
 
             if status == "done":
                 srt_content = client.get_transcript(job_id, "srt")
                 return jsonify({"status": "done", "srt_content": srt_content})
             elif status in ["rejected", "error"]:
-                # Job details might contain more info on the error
-                job_details = client.get_job_details(job_id)
-                error_msg = job_details.get("errors", [{}])[0].get("message", "A feladat sikertelen.")
+                error_msg = job_details.get("job", {}).get("errors", [{}])[0].get("message", "A feladat sikertelen.")
                 return jsonify({"status": "error", "error": error_msg})
             else:
                 return jsonify({"status": status})
@@ -140,10 +146,7 @@ def transcription_status(job_id):
 
 @app.route('/translate', methods=['POST'])
 def translate():
-    """
-    A Gemini API segítségével lefordítja a kapott SRT szöveget,
-    opcionálisan videó kontextus felhasználásával.
-    """
+    """ A Gemini API segítségével lefordítja a kapott SRT szöveget. """
     try:
         srt_text = request.form.get('srtText')
         gemini_api_key = request.form.get('geminiApiKey')
@@ -157,7 +160,7 @@ def translate():
         model = genai.GenerativeModel('gemini-1.5-flash')
 
         prompt_parts = [
-            f"Fordítsd le a következő SRT feliratot {target_language}. A formátumot és az időbélyegeket pontosan tartsd meg, csak a szöveget fordítsd. A fordítás legyen természetes és gördülékeny. Eredeti szöveg:\n\n{srt_text}"
+            f"Fordítsd le a következő SRT feliratot erre a nyelvre: {target_language}. A formátumot és az időbélyegeket pontosan tartsd meg, csak a szöveget fordítsd. A fordítás legyen természetes és gördülékeny. Eredeti szöveg:\n\n{srt_text}"
         ]
 
         if video_file:
@@ -165,12 +168,8 @@ def translate():
             filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
             video_file.save(filepath)
             
-            # Várunk, amíg a fájl teljesen kiíródik a lemezre
-            time.sleep(1)
-            
             video_file_data = genai.upload_file(path=filepath)
             
-            # Várunk, amíg a feltöltés feldolgozása befejeződik
             while video_file_data.state.name == "PROCESSING":
                 time.sleep(2)
                 video_file_data = genai.get_file(video_file_data.name)
@@ -182,8 +181,6 @@ def translate():
             prompt_parts.insert(1, "\nA videó kontextusa segít a pontosabb fordításban.")
             
             response = model.generate_content(prompt_parts)
-            
-            # A feltöltött fájl törlése a szerverről
             os.remove(filepath)
         else:
             response = model.generate_content(prompt_parts)
