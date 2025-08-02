@@ -1,5 +1,5 @@
 Flask
-speechmatics-batch
+speechmatics
 google-generativeai
 httpx
 Werkzeug
