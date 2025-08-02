@@ -2,7 +2,7 @@ import os
 import time
 from flask import Flask, request, jsonify, render_template
 from werkzeug.utils import secure_filename
-from speechmatics.batch import BatchClient # CORRECTED IMPORT
+from speechmatics.client import BatchClient # EZ A HELYES IMPORT
 import google.generativeai as genai
 import httpx
 
@@ -12,12 +12,10 @@ UPLOAD_FOLDER = 'uploads'
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-
 # --- Main Page ---
 @app.route('/')
 def index():
     return render_template('index.html')
-
 
 # --- Transcribe from FILE ---
 @app.route('/start-transcription', methods=['POST'])
@@ -37,20 +35,18 @@ def handle_start_transcription():
     file.save(filepath)
 
     try:
-        # CORRECTED INITIALIZATION
-        with BatchClient(api_key=api_key) as client:
+        settings = {'auth_token': api_key}
+        with BatchClient(settings) as client:
             conf = {
                 "type": "transcription",
                 "transcription_config": {
                     "language": language
                 }
             }
-            # The new library uses separate calls for submit and wait
             job_id = client.submit_job(
                 audio=filepath,
                 config=conf,
             )
-            # We wait for the result using the job_id
             transcript = client.wait_for_job_result(job_id, transcription_format="srt")
             return jsonify({'status': 'done', 'srt_content': transcript})
 
@@ -73,15 +69,14 @@ def handle_start_transcription_from_url():
     language = data['language']
     
     try:
-        # CORRECTED INITIALIZATION
-        with BatchClient(api_key=api_key) as client:
+        settings = {'auth_token': api_key}
+        with BatchClient(settings) as client:
             conf = {
                 "type": "transcription",
                 "transcription_config": {
                     "language": language
                 }
             }
-            # The URL is passed directly to the submit_job function
             job_id = client.submit_job(
                 audio=audio_url,
                 config=conf
@@ -96,6 +91,7 @@ def handle_start_transcription_from_url():
 # --- Translate (Gemini) ---
 @app.route('/translate', methods=['POST'])
 def handle_translate():
+    # ... (A Gemini rész nem változik, maradhat)
     if 'geminiApiKey' not in request.form or 'srtText' not in request.form or 'targetLanguage' not in request.form:
         return jsonify({'error': 'Missing data (geminiApiKey, srtText, targetLanguage).'}), 400
     
@@ -124,7 +120,6 @@ def handle_translate():
 3.  A trágár kifejezéseket ne cenzúrázd, fordítsd le őket a megfelelő magyar megfelelőjükre.
 4.  A fordítás legyen értelmes és kövesse a videón látható eseményeket.
 5.  A végeredmény egy tiszta, valid SRT formátumú szöveg legyen, mindenféle extra magyarázat vagy kommentár nélkül.
-
 Eredeti SRT:
 ---
 {srt_to_translate}
@@ -142,6 +137,7 @@ Lefordított SRT:
     finally:
         if video_filepath and os.path.exists(video_filepath):
             os.remove(video_filepath)
+
 
 # --- Application Start ---
 if __name__ == '__main__':
