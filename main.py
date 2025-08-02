@@ -1,9 +1,10 @@
 import os
+import time  # JAVÍTVA: asyncio helyett time
 from flask import Flask, request, jsonify, render_template
 from werkzeug.utils import secure_filename
-import speechmatics.client # Ez a jó, 'c' betűvel
+import speechmatics.client
 import google.generativeai as genai
-import httpx # Ezt meghagyjuk az URL-es verzióhoz
+import httpx
 
 # --- Flask App Inicializálása ---
 app = Flask(__name__)
@@ -18,7 +19,7 @@ def index():
     return render_template('index.html')
 
 
-# --- Átírás FÁJLBÓL (Egyszerűsített, Szinkron) ---
+# --- Átírás FÁJLBÓL (Ez már jó volt) ---
 @app.route('/start-transcription', methods=['POST'])
 def handle_start_transcription():
     if 'file' not in request.files or 'apiKey' not in request.form or 'language' not in request.form:
@@ -38,7 +39,6 @@ def handle_start_transcription():
     try:
         settings = {'auth_token': api_key}
         
-        # A szinkron BatchClient használata
         with speechmatics.client.BatchClient(settings) as client:
             conf = {
                 "type": "transcription",
@@ -46,25 +46,19 @@ def handle_start_transcription():
                     "language": language
                 }
             }
-            # A run_batch egyben elküldi a fájlt és megvárja az eredményt
             transcript = client.run_batch(filepath, conf, transcription_format="srt")
-            
-            # Mivel ez a függvény már megvárja az eredményt,
-            # nincs szükség külön státusz lekérdezésre és job_id-ra.
-            # Azonnal a kész SRT szöveget küldjük vissza.
             return jsonify({'status': 'done', 'srt_content': transcript})
 
     except Exception as e:
         app.logger.error(f"Speechmatics hiba: {e}")
         return jsonify({'error': f"Speechmatics API hiba: {str(e)}"}), 500
     finally:
-        # A végén mindenképp töröljük az ideiglenes fájlt
         if os.path.exists(filepath):
             os.remove(filepath)
 
-# --- Átírás URL-BŐL (Ez maradhat aszinkron, mert az httpx jól kezeli) ---
+# --- Átírás URL-BŐL (JAVÍTVA szinkronra) ---
 @app.route('/start-transcription-from-url', methods=['POST'])
-async def handle_start_transcription_from_url():
+def handle_start_transcription_from_url(): # JAVÍTVA: async def -> def
     data = request.get_json()
     if not data or 'url' not in data or 'apiKey' not in data or 'language' not in data:
         return jsonify({'error': 'Hiányzó adatok a kérésben (url, apiKey, language).'}), 400
@@ -82,23 +76,20 @@ async def handle_start_transcription_from_url():
     }
     
     try:
-        # Ehhez kell az async és a httpx, de a pollingot innen is kivesszük
-        async with httpx.AsyncClient(timeout=600.0) as client: # Hosszabb időkorlát
-            # Feladat elküldése
-            post_response = await client.post(api_endpoint, headers=headers, json=config)
+        with httpx.Client(timeout=600.0) as client: # JAVÍTVA: httpx.Client
+            post_response = client.post(api_endpoint, headers=headers, json=config) # JAVÍTVA: nincs await
             post_response.raise_for_status()
             job_data = post_response.json()
             job_id = job_data.get('id')
             
-            # Polling (várakozás az eredményre)
             status_url = f"{api_endpoint}/{job_id}"
             while True:
-                await asyncio.sleep(5)
-                status_response = await client.get(status_url, headers={"Authorization": f"Bearer {api_key}"})
+                time.sleep(5) # JAVÍTVA: asyncio.sleep -> time.sleep
+                status_response = client.get(status_url, headers={"Authorization": f"Bearer {api_key}"}) # JAVÍTVA: nincs await
                 status_data = status_response.json()
                 if status_data['job']['status'] == 'done':
                     transcript_url = f"{status_url}/transcript?format=srt"
-                    transcript_response = await client.get(transcript_url, headers={"Authorization": f"Bearer {api_key}"})
+                    transcript_response = client.get(transcript_url, headers={"Authorization": f"Bearer {api_key}"}) # JAVÍTVA: nincs await
                     return jsonify({'status': 'done', 'srt_content': transcript_response.text})
                 elif status_data['job']['status'] in ['rejected', 'deleted', 'expired']:
                     raise Exception(f"A feladat sikertelen: {status_data['job']['errors']}")
@@ -108,9 +99,9 @@ async def handle_start_transcription_from_url():
         return jsonify({'error': str(e)}), 500
 
 
-# --- Fordítás (Gemini) ---
+# --- Fordítás (Gemini) (JAVÍTVA szinkronra) ---
 @app.route('/translate', methods=['POST'])
-async def handle_translate():
+def handle_translate(): # JAVÍTVA: async def -> def
     if 'geminiApiKey' not in request.form or 'srtText' not in request.form or 'targetLanguage' not in request.form:
         return jsonify({'error': 'Hiányzó adatok (geminiApiKey, srtText, targetLanguage).'}), 400
     
@@ -148,12 +139,12 @@ Lefordított SRT:
 """
         prompt_parts.append(prompt_text)
         
-        response = await model.generate_content_async(prompt_parts)
+        response = model.generate_content(prompt_parts) # JAVÍTVA: generate_content_async -> generate_content
         return jsonify({'translated_text': response.text})
         
     except Exception as e:
         app.logger.error(f"Gemini API hiba: {e}")
-        return jsonify({'error': f"Gemini API hiba: {e}"}), 500
+        return jsonify({'error': f"Gemini API hiba: {str(e)}"}), 500
     finally:
         if video_filepath and os.path.exists(video_filepath):
             os.remove(video_filepath)
@@ -161,5 +152,4 @@ Lefordított SRT:
 
 # --- Alkalmazás Indítása ---
 if __name__ == '__main__':
-    # Ezt a részt a Replit vagy a Gunicorn kezeli, de hibakereséshez hasznos lehet
     app.run(host='0.0.0.0', port=8080)
