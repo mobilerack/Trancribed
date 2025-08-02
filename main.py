@@ -2,7 +2,8 @@ import os
 import time  # JAVÍTVA: asyncio helyett time
 from flask import Flask, request, jsonify, render_template
 from werkzeug.utils import secure_filename
-import speechmatics.client
+from speechmatics import client
+
 import google.generativeai as genai
 import httpx
 
