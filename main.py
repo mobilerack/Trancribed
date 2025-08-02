@@ -1,20 +1,19 @@
+import os
 from flask import Flask, request, jsonify, render_template
 
-# Speechmatics kliens importálása
+# A szükséges Speechmatics modulok importálása
 from speechmatics.batch_client import BatchClient
 from speechmatics.models import ConnectionSettings, TranscriptionConfig
 
-# --- Flask alkalmazás beállítása ---
+# Flask alkalmazás létrehozása
 app = Flask(__name__)
 
-
-# --- Flask végpontok (Routes) ---
 
 @app.route("/")
 def index():
     """
-    Ez a főoldal, ami megjeleníti a HTML formot,
-    ahol a felhasználó megadhatja az API kulcsot és feltöltheti a fájlt.
+    A főoldal, ami betölti a 'templates/index.html' fájlt.
+    Ez a HTML fájl tartalmazza a feltöltő űrlapot.
     """
     return render_template("index.html")
 
@@ -22,53 +21,54 @@ def index():
 @app.route("/transcribe", methods=["POST"])
 def transcribe_audio():
     """
-    Ez a végpont a form által küldött adatokat dolgozza fel.
+    Fogadja az űrlapról beküldött API kulcsot és hangfájlt,
+    majd elindítja az átírási folyamatot.
     """
-    # Olvassuk ki az API kulcsot a formból
+    # Adatok kiolvasása a beküldött űrlapból
     api_key = request.form.get('api_key')
+    audio_file = request.files.get('file')
+
+    # Ellenőrzés: Az API kulcs megadása kötelező
     if not api_key:
         return jsonify({"error": "Az API kulcs megadása kötelező."}), 400
 
-    # Ellenőrizzük, hogy a kérés tartalmaz-e fájlt
-    if 'file' not in request.files:
-        return jsonify({"error": "Nincs fájl a kérésben."}), 400
-
-    audio_file = request.files['file']
-
-    # Ellenőrizzük, hogy a fájlnév nem üres-e
-    if audio_file.filename == '':
-        return jsonify({"error": "Nincs kiválasztott fájl."}), 400
+    # Ellenőrzés: Fájl feltöltése kötelező
+    if not audio_file:
+        return jsonify({"error": "Nincs feltöltött fájl."}), 400
 
     try:
-        # A ConnectionSettings objektumot minden kérésnél újra létrehozzuk
-        # azzal az API kulccsal, amit a felhasználó a formban megadott.
-        sm_settings = ConnectionSettings(
+        # 1. Kapcsolati beállítások létrehozása minden kérésnél,
+        #    a felhasználó által frissen megadott API kulccsal.
+        settings = ConnectionSettings(
             url="https://asr.api.speechmatics.com/v2",
             auth_token=api_key,
         )
 
-        # A 'with' blokk gondoskodik a kliens erőforrásainak megfelelő lezárásáról
-        with BatchClient(sm_settings) as client:
-            conf = TranscriptionConfig(language="hu")
+        # 2. A kliens létrehozása a 'with' blokkon belül,
+        #    amely biztosítja az erőforrások megfelelő kezelését.
+        with BatchClient(settings) as client:
+            # Átírási konfiguráció (pl. nyelv beállítása)
+            config = TranscriptionConfig(language="hu")
 
+            # A feladat elküldése a Speechmatics felé
             job_id = client.submit_job(
                 audio=audio_file,
-                transcription_config=conf,
+                transcription_config=config,
             )
 
-            # Sikeres esetben adjuk vissza a job azonosítóját
-            return jsonify({
-                "message": "Fájl sikeresen feltöltve, az átírás elindult.",
-                "job_id": job_id
-            }), 202
+        # Sikeres feladatküldés esetén visszaadjuk a feladat azonosítóját
+        return jsonify({
+            "message": "Feladat sikeresen elküldve.",
+            "job_id": job_id
+        }), 202
 
     except Exception as e:
-        # A valós hiba a szerver oldali logban fog látszani.
-        # A felhasználónak csak egy általános hibaüzenetet mutatunk.
-        app.logger.error(f"Speechmatics hiba: {e}")
-        return jsonify({"error": "Hiba történt az átírás során. Ellenőrizd az API kulcs helyességét."}), 500
+        # Hiba esetén naplózzuk a pontos hibaüzenetet a szerver oldalon,
+        # és egy általános hibaüzenetet küldünk vissza a felhasználónak.
+        app.logger.error(f"Speechmatics API hiba: {e}")
+        return jsonify({"error": "Hiba történt az átírás során. Ellenőrizze az API kulcs helyességét."}), 500
 
 
-# Indítás helyi teszteléshez
+# Alkalmazás indítása helyi fejlesztéshez
 if __name__ == "__main__":
     app.run(debug=True)
