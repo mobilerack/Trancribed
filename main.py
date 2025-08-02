@@ -1,110 +1,101 @@
 import os
-import time  # JAVÍTVA: asyncio helyett time
+import time
 from flask import Flask, request, jsonify, render_template
 from werkzeug.utils import secure_filename
-from speechmatics import client
-
+from speechmatics.batch import BatchClient # CORRECTED IMPORT
 import google.generativeai as genai
 import httpx
 
-# --- Flask App Inicializálása ---
+# --- Flask App Initialization ---
 app = Flask(__name__)
 UPLOAD_FOLDER = 'uploads'
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 
-# --- Főoldal betöltése ---
+# --- Main Page ---
 @app.route('/')
 def index():
     return render_template('index.html')
 
 
-# --- Átírás FÁJLBÓL (Ez már jó volt) ---
+# --- Transcribe from FILE ---
 @app.route('/start-transcription', methods=['POST'])
 def handle_start_transcription():
     if 'file' not in request.files or 'apiKey' not in request.form or 'language' not in request.form:
-        return jsonify({'error': 'Hiányzó adatok (fájl, apiKulcs, nyelv).'}), 400
+        return jsonify({'error': 'Missing data (file, apiKey, language).'}), 400
     
     file = request.files['file']
     api_key = request.form['apiKey']
     language = request.form['language']
 
     if file.filename == '':
-        return jsonify({'error': 'Nincs kiválasztott fájl.'}), 400
+        return jsonify({'error': 'No file selected.'}), 400
 
     filename = secure_filename(file.filename)
     filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
     file.save(filepath)
 
     try:
-        settings = {'auth_token': api_key}
-        
-        with speechmatics.client.BatchClient(settings) as client:
+        # CORRECTED INITIALIZATION
+        with BatchClient(api_key=api_key) as client:
             conf = {
                 "type": "transcription",
                 "transcription_config": {
                     "language": language
                 }
             }
-            transcript = client.run_batch(filepath, conf, transcription_format="srt")
+            job_id = client.submit_job(
+                audio=filepath,
+                config=conf,
+            )
+            transcript = client.wait_for_job_result(job_id, transcription_format="srt")
             return jsonify({'status': 'done', 'srt_content': transcript})
 
     except Exception as e:
-        app.logger.error(f"Speechmatics hiba: {e}")
-        return jsonify({'error': f"Speechmatics API hiba: {str(e)}"}), 500
+        app.logger.error(f"Speechmatics error: {e}")
+        return jsonify({'error': f"Speechmatics API error: {str(e)}"}), 500
     finally:
         if os.path.exists(filepath):
             os.remove(filepath)
 
-# --- Átírás URL-BŐL (JAVÍTVA szinkronra) ---
+# --- Transcribe from URL ---
 @app.route('/start-transcription-from-url', methods=['POST'])
-def handle_start_transcription_from_url(): # JAVÍTVA: async def -> def
+def handle_start_transcription_from_url():
     data = request.get_json()
     if not data or 'url' not in data or 'apiKey' not in data or 'language' not in data:
-        return jsonify({'error': 'Hiányzó adatok a kérésben (url, apiKey, language).'}), 400
+        return jsonify({'error': 'Missing data in request (url, apiKey, language).'}), 400
     
     audio_url = data['url']
     api_key = data['apiKey']
     language = data['language']
     
-    api_endpoint = "https://asr.api.speechmatics.com/v2/jobs"
-    headers = {"Authorization": f"Bearer {api_key}"}
-    config = {
-        "type": "transcription",
-        "fetch_data": {"url": audio_url},
-        "transcription_config": {"language": language}
-    }
-    
     try:
-        with httpx.Client(timeout=600.0) as client: # JAVÍTVA: httpx.Client
-            post_response = client.post(api_endpoint, headers=headers, json=config) # JAVÍTVA: nincs await
-            post_response.raise_for_status()
-            job_data = post_response.json()
-            job_id = job_data.get('id')
-            
-            status_url = f"{api_endpoint}/{job_id}"
-            while True:
-                time.sleep(5) # JAVÍTVA: asyncio.sleep -> time.sleep
-                status_response = client.get(status_url, headers={"Authorization": f"Bearer {api_key}"}) # JAVÍTVA: nincs await
-                status_data = status_response.json()
-                if status_data['job']['status'] == 'done':
-                    transcript_url = f"{status_url}/transcript?format=srt"
-                    transcript_response = client.get(transcript_url, headers={"Authorization": f"Bearer {api_key}"}) # JAVÍTVA: nincs await
-                    return jsonify({'status': 'done', 'srt_content': transcript_response.text})
-                elif status_data['job']['status'] in ['rejected', 'deleted', 'expired']:
-                    raise Exception(f"A feladat sikertelen: {status_data['job']['errors']}")
+        # CORRECTED INITIALIZATION
+        with BatchClient(api_key=api_key) as client:
+            conf = {
+                "type": "transcription",
+                "transcription_config": {
+                    "language": language
+                }
+            }
+            # The URL is passed directly to the submit_job function
+            job_id = client.submit_job(
+                audio=audio_url,
+                config=conf
+            )
+            transcript = client.wait_for_job_result(job_id, transcription_format="srt")
+            return jsonify({'status': 'done', 'srt_content': transcript})
 
     except Exception as e:
-        app.logger.error(f"Hiba az URL-es átírás során: {e}")
+        app.logger.error(f"Error during URL transcription: {e}")
         return jsonify({'error': str(e)}), 500
 
-
-# --- Fordítás (Gemini) (JAVÍTVA szinkronra) ---
+# --- Translate (Gemini) ---
 @app.route('/translate', methods=['POST'])
-def handle_translate(): # JAVÍTVA: async def -> def
+def handle_translate():
     if 'geminiApiKey' not in request.form or 'srtText' not in request.form or 'targetLanguage' not in request.form:
-        return jsonify({'error': 'Hiányzó adatok (geminiApiKey, srtText, targetLanguage).'}), 400
+        return jsonify({'error': 'Missing data (geminiApiKey, srtText, targetLanguage).'}), 400
     
     gemini_api_key = request.form['geminiApiKey']
     srt_to_translate = request.form['srtText']
@@ -140,17 +131,17 @@ Lefordított SRT:
 """
         prompt_parts.append(prompt_text)
         
-        response = model.generate_content(prompt_parts) # JAVÍTVA: generate_content_async -> generate_content
+        response = model.generate_content(prompt_parts)
         return jsonify({'translated_text': response.text})
         
     except Exception as e:
-        app.logger.error(f"Gemini API hiba: {e}")
-        return jsonify({'error': f"Gemini API hiba: {str(e)}"}), 500
+        app.logger.error(f"Gemini API error: {e}")
+        return jsonify({'error': f"Gemini API error: {str(e)}"}), 500
     finally:
         if video_filepath and os.path.exists(video_filepath):
             os.remove(video_filepath)
 
-
-# --- Alkalmazás Indítása ---
+# --- Application Start ---
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=8080)
+
