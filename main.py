@@ -1,4 +1,7 @@
 import os
+import boto3
+from botocore.client import Config
+from botocore.exceptions import ClientError
 from flask import Flask, request, jsonify, render_template
 from werkzeug.utils import secure_filename
 import time
@@ -11,65 +14,76 @@ from httpx import HTTPStatusError
 # Gemini importok
 import google.generativeai as genai
 
-# --- Flask alkalmazás beállítása ---
+# --- Flask és Storj/S3 beállítások ---
 app = Flask(__name__)
 UPLOAD_FOLDER = 'temp_uploads'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
+# Storj/S3 beállítások beolvasása a környezeti változókból
+S3_ENDPOINT_URL = os.getenv('S3_ENDPOINT_URL')
+S3_ACCESS_KEY_ID = os.getenv('S3_ACCESS_KEY_ID')
+S3_SECRET_ACCESS_KEY = os.getenv('S3_SECRET_ACCESS_KEY')
+S3_BUCKET_NAME = os.getenv('S3_BUCKET_NAME')
 
-# --- Főoldal ---
+# Boto3 kliens létrehozása az S3-kompatibilis API-hoz
+s3_client = boto3.client(
+    's3',
+    endpoint_url=S3_ENDPOINT_URL,
+    aws_access_key_id=S3_ACCESS_KEY_ID,
+    aws_secret_access_key=S3_SECRET_ACCESS_KEY,
+    config=Config(signature_version='s3v4')
+)
+
 @app.route('/')
 def index():
     return render_template('index.html')
 
-
-# --- Speechmatics végpontok ---
-
-@app.route('/start-transcription', methods=['POST'])
-def start_transcription():
-    """ Fájl feltöltését és az átírás indítását kezeli. """
+# --- ÚJ VÉGPONT: Feltöltési URL generálása ---
+@app.route('/generate-upload-url', methods=['POST'])
+def generate_upload_url():
+    """
+    Generál egy biztonságos, időkorlátos URL-t (pre-signed URL)
+    a fájl közvetlen feltöltéséhez a Storj-ra.
+    """
     try:
-        api_key = request.form.get('apiKey')
-        language = request.form.get('language', 'hu')
-        file = request.files.get('file')
+        data = request.get_json()
+        filename = data.get('filename')
+        if not filename:
+            return jsonify({"error": "Hiányzó fájlnév."}), 400
 
-        if not all([api_key, language, file]):
-            return jsonify({"error": "Hiányzó API kulcs, nyelv vagy fájl."}), 400
+        # Egyedi, biztonságos objektumnév generálása
+        object_name = f"{int(time.time())}-{secure_filename(filename)}"
 
-        settings = ConnectionSettings(url="https://asr.api.speechmatics.com/v2", auth_token=api_key)
+        # Pre-signed URL generálása a feltöltéshez (PUT kérés)
+        upload_url = s3_client.generate_presigned_url(
+            'put_object',
+            Params={'Bucket': S3_BUCKET_NAME, 'Key': object_name},
+            ExpiresIn=3600  # A link 1 óráig érvényes
+        )
         
-        config = {
-            "type": "transcription",
-            "transcription_config": {
-                "language": language
-            }
-        }
+        # A fájl végleges, publikus URL-jének összeállítása
+        public_url = f"{S3_ENDPOINT_URL}/{S3_BUCKET_NAME}/{object_name}"
 
-        with BatchClient(settings) as client:
-            job_id = client.submit_job(
-                audio=file,
-                transcription_config=config,
-            )
-        return jsonify({"job_id": job_id}), 200
+        return jsonify({
+            'upload_url': upload_url,
+            'public_url': public_url
+        })
 
-    except HTTPStatusError as e:
-        error_details = e.response.json().get("detail") or "Ismeretlen API hiba"
-        app.logger.error(f"Speechmatics API hiba (HTTPStatusError): {error_details}")
-        return jsonify({"error": error_details}), e.response.status_code
+    except ClientError as e:
+        app.logger.error(f"S3 hiba a link generálásakor: {e}")
+        return jsonify({"error": "Nem sikerült feltöltési linket generálni."}), 500
     except Exception as e:
-        app.logger.error(f"Fájl átírási hiba: {e}")
-        return jsonify({"error": "Ismeretlen szerveroldali hiba történt."}), 500
+        app.logger.error(f"Általános hiba a link generálásakor: {e}")
+        return jsonify({"error": "Szerveroldali hiba történt."}), 500
 
+# --- MEGLÉVŐ VÉGPONTOK ---
+# Az URL-es végpontot fogjuk használni a Storj-ra feltöltött fájlokkal is.
 
 @app.route('/start-transcription-from-url', methods=['POST'])
 def start_transcription_from_url():
-    """ Fogad egy URL-t, és elindítja az átírást a helyes formátumban. """
     try:
         data = request.get_json()
-        if not data:
-            return jsonify({"error": "Érvénytelen kérés formátum."}), 400
-
         url = data.get('url')
         api_key = data.get('apiKey')
         language = data.get('language', 'hu')
@@ -81,33 +95,24 @@ def start_transcription_from_url():
         
         full_config = {
             "type": "transcription",
-            "transcription_config": {
-                "language": language
-            },
-            "fetch_data": {
-                "url": url
-            }
+            "transcription_config": {"language": language},
+            "fetch_data": {"url": url}
         }
 
         with BatchClient(settings) as client:
-            job_id = client.submit_job(
-                audio=None,
-                transcription_config=full_config
-            )
+            job_id = client.submit_job(audio=None, transcription_config=full_config)
         return jsonify({"job_id": job_id}), 200
 
     except HTTPStatusError as e:
         error_details = e.response.json().get("detail") or "Ismeretlen API hiba"
-        app.logger.error(f"Speechmatics API hiba (HTTPStatusError): {error_details}")
+        app.logger.error(f"Speechmatics API hiba: {error_details}")
         return jsonify({"error": error_details}), e.response.status_code
     except Exception as e:
         app.logger.error(f"URL átírási hiba: {e}")
         return jsonify({"error": "Ismeretlen szerveroldali hiba történt."}), 500
 
-
 @app.route('/transcription-status/<job_id>')
 def transcription_status(job_id):
-    """ Lekérdezi egy adott átírási feladat állapotát és eredményét. """
     try:
         api_key = request.args.get('apiKey')
         if not api_key:
@@ -120,8 +125,6 @@ def transcription_status(job_id):
             status = job_details.get("job", {}).get("status")
 
             if status == "done":
-                # VÉGLEGES JAVÍTÁS ITT: A wait_for_completion funkció használata
-                # Mivel a státusz már "done", ez azonnal visszaadja az eredményt.
                 srt_content = client.wait_for_completion(job_id, transcription_format="srt")
                 return jsonify({"status": "done", "srt_content": srt_content})
             elif status in ["rejected", "error"]:
@@ -132,18 +135,14 @@ def transcription_status(job_id):
 
     except HTTPStatusError as e:
         error_details = e.response.json().get("detail") or "Ismeretlen API hiba"
-        app.logger.error(f"Státusz lekérdezési hiba (HTTPStatusError): {error_details}")
+        app.logger.error(f"Státusz lekérdezési hiba: {error_details}")
         return jsonify({"error": error_details}), e.response.status_code
     except Exception as e:
         app.logger.error(f"Státusz lekérdezési hiba: {e}")
         return jsonify({"error": "Ismeretlen szerveroldali hiba történt."}), 500
 
-
-# --- Gemini végpont ---
-
 @app.route('/translate', methods=['POST'])
 def translate():
-    """ A Gemini API segítségével lefordítja a kapott SRT szöveget. """
     try:
         srt_text = request.form.get('srtText')
         gemini_api_key = request.form.get('geminiApiKey')
@@ -189,7 +188,5 @@ def translate():
         return jsonify({"error": f"Hiba a Gemini fordítás során: {e}"}), 500
 
 
-# --- Alkalmazás indítása ---
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5001)
-
