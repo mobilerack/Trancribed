@@ -8,24 +8,22 @@ document.addEventListener('DOMContentLoaded', () => {
     const transcribeUrlBtn = document.getElementById('transcribeUrlButton');
     const translateBtn = document.getElementById('translateButton');
     const downloadBtn = document.getElementById('downloadSrtButton');
-    const statusDiv = document.getElementById('status'); // A felső státusz sáv megmarad az utolsó üzenetnek
+    const statusDiv = document.getElementById('status');
     const srtEditor = document.getElementById('srtEditor');
     const transcribeSpinner = document.getElementById('transcribeSpinner');
     const translateSpinner = document.getElementById('translateSpinner');
     const transcribeFileInput = document.getElementById('transcribeFile');
-    const logElement = document.getElementById('log'); // Új elem: a log ablak
+    const logElement = document.getElementById('log');
 
-    // API kulcsok betöltése a böngésző tárolójából
+    // API kulcsok betöltése
     sKeyInput.value = localStorage.getItem('speechmaticsApiKey') || '';
     gKeyInput.value = localStorage.getItem('geminiApiKey') || '';
-    
-    // Kezdő üzenet a log ablakban
     logElement.textContent = 'Alkalmazás betöltve. Várakozás a feladatokra...\n';
 
     // Eseménykezelők
     saveSKeyBtn.addEventListener('click', () => saveKey('speechmaticsApiKey', sKeyInput.value));
     saveGKeyBtn.addEventListener('click', () => saveKey('geminiApiKey', gKeyInput.value));
-    transcribeBtn.addEventListener('click', startTranscription);
+    transcribeBtn.addEventListener('click', startDirectUploadTranscription); // A gomb most ezt a funkciót hívja
     transcribeUrlBtn.addEventListener('click', startTranscriptionFromUrl);
     translateBtn.addEventListener('click', startTranslation);
     downloadBtn.addEventListener('click', downloadSrt);
@@ -33,32 +31,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- FUNKCIÓK ---
 
-    function saveKey(keyName, value) {
-        localStorage.setItem(keyName, value);
-        updateStatus(`${keyName.split('Api')[0]} kulcs mentve!`, 'success');
-    }
-    
-    /**
-     * FRISSÍTETT FUNKCIÓ:
-     * Frissíti a felső státusz sávot, és egy új, időbélyeggel ellátott
-     * bejegyzést ad a lenti log ablakhoz.
-     */
     function updateStatus(message, type = 'info') {
-        // 1. Felső státusz sáv frissítése (mint a régi)
         statusDiv.textContent = message;
         statusDiv.className = `alert alert-${type}`;
-
-        // 2. Új bejegyzés hozzáadása a log ablakhoz
         const timestamp = new Date().toLocaleTimeString('hu-HU');
         const logType = type.toUpperCase();
-        const logMessage = `[${timestamp}] [${logType}] ${message}\n`;
-        
-        logElement.textContent += logMessage;
-        
-        // 3. Automatikus görgetés a log ablak aljára
+        logElement.textContent += `[${timestamp}] [${logType}] ${message}\n`;
         logElement.scrollTop = logElement.scrollHeight;
     }
-
 
     function toggleSpinnersAndButtons(show) {
         transcribeSpinner.classList.toggle('d-none', !show);
@@ -67,7 +47,10 @@ document.addEventListener('DOMContentLoaded', () => {
         buttons.forEach(btn => { if (btn) btn.disabled = show; });
     }
 
-    async function startTranscription() {
+    /**
+     * ÚJ, KÖZVETLEN FELTÖLTÉSI FOLYAMAT A STORJ-RA
+     */
+    async function startDirectUploadTranscription() {
         const file = document.getElementById('transcribeFile').files[0];
         const language = document.getElementById('sourceLanguageSelect').value;
         const apiKey = localStorage.getItem('speechmaticsApiKey');
@@ -82,27 +65,51 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         toggleSpinnersAndButtons(true);
-        updateStatus('Fájl feltöltése és feldolgozás indítása...', 'info');
-
-        const formData = new FormData();
-        formData.append('file', file);
-        formData.append('apiKey', apiKey);
-        formData.append('language', language);
 
         try {
-            const response = await fetch('/start-transcription', { method: 'POST', body: formData });
-            const data = await response.json();
-            if (!response.ok) throw new Error(data.error || `Szerverhiba: ${response.status}`);
-            updateStatus(`Átírás elindítva (Job ID: ${data.job_id}). Állapot lekérdezése...`, 'info');
-            pollStatus(data.job_id, apiKey);
+            // 1. LÉPÉS: Feltöltési URL kérése a szerverünktől
+            updateStatus('Feltöltési engedély kérése a szervertől...', 'info');
+            const urlResponse = await fetch('/generate-upload-url', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ filename: file.name })
+            });
+
+            if (!urlResponse.ok) {
+                const errorData = await urlResponse.json();
+                throw new Error(errorData.error || 'Nem sikerült a feltöltési link lekérése.');
+            }
+            const { upload_url, public_url } = await urlResponse.json();
+            updateStatus('Engedély megkapva. Fájl feltöltése a cloud tárhelyre...', 'info');
+
+            // 2. LÉPÉS: Fájl közvetlen feltöltése a Storj-ra (PUT kéréssel)
+            const uploadResponse = await fetch(upload_url, {
+                method: 'PUT',
+                body: file,
+                headers: {
+                    // Fontos lehet a fájl típusának megadása
+                    'Content-Type': file.type || 'application/octet-stream'
+                }
+            });
+
+            if (!uploadResponse.ok) {
+                throw new Error(`A fájl feltöltése a cloud tárhelyre sikertelen. Státusz: ${uploadResponse.status}`);
+            }
+            updateStatus('Fájl sikeresen feltöltve. Átírás indítása...', 'info');
+
+            // 3. LÉPÉS: Átírás indítása a feltöltött fájl publikus URL-jével
+            // Ezt a már meglévő `startTranscriptionFromUrl` logikával indítjuk
+            await startTranscriptionFromUrl(public_url);
+
         } catch (error) {
-            updateStatus(`Hiba: ${error.message}`, 'danger');
+            updateStatus(`Hiba a folyamat során: ${error.message}`, 'danger');
             toggleSpinnersAndButtons(false);
         }
     }
 
-    async function startTranscriptionFromUrl() {
-        const audioUrl = document.getElementById('audioUrlInput').value;
+    // A startTranscriptionFromUrl funkciót kicsit módosítjuk, hogy paramétert is fogadjon
+    async function startTranscriptionFromUrl(prefilledUrl = null) {
+        const audioUrl = prefilledUrl || document.getElementById('audioUrlInput').value;
         const language = document.getElementById('sourceLanguageSelect').value;
         const apiKey = localStorage.getItem('speechmaticsApiKey');
 
@@ -161,6 +168,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function startTranslation() {
+        // ... Ez a funkció változatlan ...
         const srtText = srtEditor.value;
         const geminiApiKey = localStorage.getItem('geminiApiKey');
         const videoFile = document.getElementById('videoContextFile').files[0];
@@ -200,6 +208,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function downloadSrt() {
+        // ... Ez a funkció változatlan ...
         const srtContent = srtEditor.value;
         if (!srtContent) {
             updateStatus('Nincs mit letölteni!', 'warning');
@@ -218,6 +227,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function handleSrtUpload(event) {
+        // ... Ez a funkció változatlan ...
         const file = event.target.files[0];
         if (file && file.name.endsWith('.srt')) {
             const reader = new FileReader();
@@ -227,5 +237,11 @@ document.addEventListener('DOMContentLoaded', () => {
             };
             reader.readAsText(file);
         }
+    }
+
+    function saveKey(keyName, value) {
+        // ... Ez a funkció változatlan ...
+        localStorage.setItem(keyName, value);
+        updateStatus(`${keyName.split('Api')[0]} kulcs mentve!`, 'success');
     }
 });
