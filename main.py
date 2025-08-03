@@ -120,8 +120,9 @@ def transcription_status(job_id):
             status = job_details.get("job", {}).get("status")
 
             if status == "done":
-                # VÉGLEGES JAVÍTÁS ITT: get_transcript -> retrieve_transcript
-                srt_content = client.retrieve_transcript(job_id, "srt")
+                # VÉGLEGES JAVÍTÁS ITT: A wait_for_completion funkció használata
+                # Mivel a státusz már "done", ez azonnal visszaadja az eredményt.
+                srt_content = client.wait_for_completion(job_id, transcription_format="srt")
                 return jsonify({"status": "done", "srt_content": srt_content})
             elif status in ["rejected", "error"]:
                 error_msg = job_details.get("job", {}).get("errors", [{}])[0].get("message", "A feladat sikertelen.")
@@ -191,5 +192,4 @@ def translate():
 # --- Alkalmazás indítása ---
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5001)
-
 
