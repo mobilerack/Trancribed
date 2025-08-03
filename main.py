@@ -50,25 +50,21 @@ def index():
 @app.route('/generate-upload-url', methods=['POST'])
 def generate_upload_url():
     """ Generál egy biztonságos URL-t a fájl közvetlen feltöltéséhez a Storj-ra. """
-    # RÉSZLETESEBB NAPLÓZÁS HOZZÁADVA
-    app.logger.info(f"'/generate-upload-url' kérés érkezett. Header: {request.headers}")
-    app.logger.info(f"A kérés nyers tartalma (raw data): {request.data}")
-
     try:
         data = request.get_json()
-        
-        app.logger.info(f"JSON-ként feldolgozott adat: {data}")
-
         if not data:
-            app.logger.error("A kérés (request) nem tartalmazott JSON adatot, vagy a feldolgozás sikertelen.")
-            return jsonify({"error": "Érvénytelen kérés formátum (nem JSON)."}), 400
+            return jsonify({"error": "Érvénytelen kérés formátum."}), 400
 
         filename = data.get('filename')
         content_type = data.get('contentType')
 
-        if not all([filename, content_type]):
-            app.logger.error(f"Hiányzó adatok a JSON-ból. Fájlnév: {filename}, Típus: {content_type}")
-            return jsonify({"error": "Hiányzó fájlnév vagy tartalomtípus."}), 400
+        # JAVÍTÁS ITT: Ha a böngésző nem küld típust, adunk neki egy alapértelmezettet.
+        if not content_type:
+            app.logger.warning(f"A böngésző nem küldött 'contentType'-ot a '{filename}' fájlhoz. Alapértelmezett 'application/octet-stream' használata.")
+            content_type = 'application/octet-stream'
+        
+        if not filename:
+            return jsonify({"error": "Hiányzó fájlnév."}), 400
 
         object_name = f"{int(time.time())}-{secure_filename(filename)}"
 
@@ -85,6 +81,9 @@ def generate_upload_url():
             'public_url': public_url
         })
 
+    except ClientError as e:
+        app.logger.error(f"S3 hiba a link generálásakor: {e}")
+        return jsonify({"error": "Nem sikerült feltöltési linket generálni."}), 500
     except Exception as e:
         app.logger.error(f"Általános hiba a link generálásakor: {e}")
         return jsonify({"error": "Szerveroldali hiba történt."}), 500
