@@ -90,9 +90,6 @@ def start_transcription_from_url():
         }
 
         with BatchClient(settings) as client:
-            # HARMADIK, VÉGLEGES JAVÍTÁS ITT:
-            # Az 'audio' paramétert megadjuk, de None értékkel, jelezve,
-            # hogy a konfigurációban lévő 'fetch_data'-t kell használni.
             job_id = client.submit_job(
                 audio=None,
                 transcription_config=full_config
@@ -123,7 +120,8 @@ def transcription_status(job_id):
             status = job_details.get("job", {}).get("status")
 
             if status == "done":
-                srt_content = client.get_transcript(job_id, "srt")
+                # VÉGLEGES JAVÍTÁS ITT: get_transcript -> retrieve_transcript
+                srt_content = client.retrieve_transcript(job_id, "srt")
                 return jsonify({"status": "done", "srt_content": srt_content})
             elif status in ["rejected", "error"]:
                 error_msg = job_details.get("job", {}).get("errors", [{}])[0].get("message", "A feladat sikertelen.")
@@ -193,4 +191,5 @@ def translate():
 # --- Alkalmazás indítása ---
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5001)
+
 
