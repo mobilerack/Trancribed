@@ -20,13 +20,21 @@ UPLOAD_FOLDER = 'temp_uploads'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
-# Storj/S3 beállítások beolvasása a környezeti változókból
 S3_ENDPOINT_URL = os.getenv('S3_ENDPOINT_URL')
 S3_ACCESS_KEY_ID = os.getenv('S3_ACCESS_KEY_ID')
 S3_SECRET_ACCESS_KEY = os.getenv('S3_SECRET_ACCESS_KEY')
 S3_BUCKET_NAME = os.getenv('S3_BUCKET_NAME')
 
-# Boto3 kliens létrehozása az S3-kompatibilis API-hoz
+required_env_vars = {
+    "S3_ENDPOINT_URL": S3_ENDPOINT_URL,
+    "S3_ACCESS_KEY_ID": S3_ACCESS_KEY_ID,
+    "S3_SECRET_ACCESS_KEY": S3_SECRET_ACCESS_KEY,
+    "S3_BUCKET_NAME": S3_BUCKET_NAME
+}
+missing_vars = [key for key, value in required_env_vars.items() if value is None]
+if missing_vars:
+    raise ValueError(f"Hiányzó környezeti változók: {', '.join(missing_vars)}.")
+
 s3_client = boto3.client(
     's3',
     endpoint_url=S3_ENDPOINT_URL,
@@ -39,30 +47,26 @@ s3_client = boto3.client(
 def index():
     return render_template('index.html')
 
-# --- ÚJ VÉGPONT: Feltöltési URL generálása ---
 @app.route('/generate-upload-url', methods=['POST'])
 def generate_upload_url():
-    """
-    Generál egy biztonságos, időkorlátos URL-t (pre-signed URL)
-    a fájl közvetlen feltöltéséhez a Storj-ra.
-    """
+    """ Generál egy biztonságos URL-t a fájl közvetlen feltöltéséhez a Storj-ra. """
     try:
         data = request.get_json()
         filename = data.get('filename')
-        if not filename:
-            return jsonify({"error": "Hiányzó fájlnév."}), 400
+        content_type = data.get('contentType') # ÚJ: Fogadjuk a fájl típusát
 
-        # Egyedi, biztonságos objektumnév generálása
+        if not all([filename, content_type]):
+            return jsonify({"error": "Hiányzó fájlnév vagy tartalomtípus."}), 400
+
         object_name = f"{int(time.time())}-{secure_filename(filename)}"
 
-        # Pre-signed URL generálása a feltöltéshez (PUT kérés)
+        # JAVÍTÁS: A ContentType-ot is belevesszük a link generálásába
         upload_url = s3_client.generate_presigned_url(
             'put_object',
-            Params={'Bucket': S3_BUCKET_NAME, 'Key': object_name},
-            ExpiresIn=3600  # A link 1 óráig érvényes
+            Params={'Bucket': S3_BUCKET_NAME, 'Key': object_name, 'ContentType': content_type},
+            ExpiresIn=3600
         )
         
-        # A fájl végleges, publikus URL-jének összeállítása
         public_url = f"{S3_ENDPOINT_URL}/{S3_BUCKET_NAME}/{object_name}"
 
         return jsonify({
@@ -77,9 +81,7 @@ def generate_upload_url():
         app.logger.error(f"Általános hiba a link generálásakor: {e}")
         return jsonify({"error": "Szerveroldali hiba történt."}), 500
 
-# --- MEGLÉVŐ VÉGPONTOK ---
-# Az URL-es végpontot fogjuk használni a Storj-ra feltöltött fájlokkal is.
-
+# A többi végpont változatlan
 @app.route('/start-transcription-from-url', methods=['POST'])
 def start_transcription_from_url():
     try:
@@ -87,22 +89,13 @@ def start_transcription_from_url():
         url = data.get('url')
         api_key = data.get('apiKey')
         language = data.get('language', 'hu')
-
         if not all([url, api_key]):
             return jsonify({"error": "Hiányzó URL vagy API kulcs."}), 400
-
         settings = ConnectionSettings(url="https://asr.api.speechmatics.com/v2", auth_token=api_key)
-        
-        full_config = {
-            "type": "transcription",
-            "transcription_config": {"language": language},
-            "fetch_data": {"url": url}
-        }
-
+        full_config = {"type": "transcription", "transcription_config": {"language": language}, "fetch_data": {"url": url}}
         with BatchClient(settings) as client:
             job_id = client.submit_job(audio=None, transcription_config=full_config)
         return jsonify({"job_id": job_id}), 200
-
     except HTTPStatusError as e:
         error_details = e.response.json().get("detail") or "Ismeretlen API hiba"
         app.logger.error(f"Speechmatics API hiba: {error_details}")
@@ -117,13 +110,10 @@ def transcription_status(job_id):
         api_key = request.args.get('apiKey')
         if not api_key:
             return jsonify({"error": "Hiányzó API kulcs."}), 400
-
         settings = ConnectionSettings(url="https://asr.api.speechmatics.com/v2", auth_token=api_key)
-
         with BatchClient(settings) as client:
             job_details = client.check_job_status(job_id)
             status = job_details.get("job", {}).get("status")
-
             if status == "done":
                 srt_content = client.wait_for_completion(job_id, transcription_format="srt")
                 return jsonify({"status": "done", "srt_content": srt_content})
@@ -132,7 +122,6 @@ def transcription_status(job_id):
                 return jsonify({"status": "error", "error": error_msg})
             else:
                 return jsonify({"status": status})
-
     except HTTPStatusError as e:
         error_details = e.response.json().get("detail") or "Ismeretlen API hiba"
         app.logger.error(f"Státusz lekérdezési hiba: {error_details}")
@@ -148,45 +137,32 @@ def translate():
         gemini_api_key = request.form.get('geminiApiKey')
         target_language = request.form.get('targetLanguage', 'magyarra')
         video_file = request.files.get('videoContextFile')
-
         if not all([srt_text, gemini_api_key]):
             return jsonify({"error": "Hiányzó SRT szöveg vagy Gemini API kulcs."}), 400
-
         genai.configure(api_key=gemini_api_key)
         model = genai.GenerativeModel('gemini-1.5-flash')
-
-        prompt_parts = [
-            f"Fordítsd le a következő SRT feliratot erre a nyelvre: {target_language}. A formátumot és az időbélyegeket pontosan tartsd meg, csak a szöveget fordítsd. A fordítás legyen természetes és gördülékeny. Eredeti szöveg:\n\n{srt_text}"
-        ]
-
+        prompt_parts = [f"Fordítsd le a következő SRT feliratot erre a nyelvre: {target_language}. A formátumot és az időbélyegeket pontosan tartsd meg, csak a szöveget fordítsd. A fordítás legyen természetes és gördülékeny. Eredeti szöveg:\n\n{srt_text}"]
         if video_file:
             filename = secure_filename(video_file.filename)
             filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
             video_file.save(filepath)
-            
             video_file_data = genai.upload_file(path=filepath)
-            
             while video_file_data.state.name == "PROCESSING":
                 time.sleep(2)
                 video_file_data = genai.get_file(video_file_data.name)
-
             if video_file_data.state.name == "FAILED":
                  return jsonify({"error": "A videófájl feltöltése a Geminihez sikertelen."}), 500
-
             prompt_parts.insert(0, video_file_data)
             prompt_parts.insert(1, "\nA videó kontextusa segít a pontosabb fordításban.")
-            
             response = model.generate_content(prompt_parts)
             os.remove(filepath)
         else:
             response = model.generate_content(prompt_parts)
-
         return jsonify({"translated_text": response.text})
-
     except Exception as e:
         app.logger.error(f"Gemini fordítási hiba: {e}")
         return jsonify({"error": f"Hiba a Gemini fordítás során: {e}"}), 500
 
-
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5001)
+
