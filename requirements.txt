@@ -2,6 +2,6 @@ Flask
 speechmatics-python
 google-generativeai
 httpx
-Werkzeug
 python-dotenv
 gunicorn
+boto3
