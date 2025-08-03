@@ -50,17 +50,28 @@ def index():
 @app.route('/generate-upload-url', methods=['POST'])
 def generate_upload_url():
     """ Generál egy biztonságos URL-t a fájl közvetlen feltöltéséhez a Storj-ra. """
+    # RÉSZLETESEBB NAPLÓZÁS HOZZÁADVA
+    app.logger.info(f"'/generate-upload-url' kérés érkezett. Header: {request.headers}")
+    app.logger.info(f"A kérés nyers tartalma (raw data): {request.data}")
+
     try:
         data = request.get_json()
+        
+        app.logger.info(f"JSON-ként feldolgozott adat: {data}")
+
+        if not data:
+            app.logger.error("A kérés (request) nem tartalmazott JSON adatot, vagy a feldolgozás sikertelen.")
+            return jsonify({"error": "Érvénytelen kérés formátum (nem JSON)."}), 400
+
         filename = data.get('filename')
-        content_type = data.get('contentType') # ÚJ: Fogadjuk a fájl típusát
+        content_type = data.get('contentType')
 
         if not all([filename, content_type]):
+            app.logger.error(f"Hiányzó adatok a JSON-ból. Fájlnév: {filename}, Típus: {content_type}")
             return jsonify({"error": "Hiányzó fájlnév vagy tartalomtípus."}), 400
 
         object_name = f"{int(time.time())}-{secure_filename(filename)}"
 
-        # JAVÍTÁS: A ContentType-ot is belevesszük a link generálásába
         upload_url = s3_client.generate_presigned_url(
             'put_object',
             Params={'Bucket': S3_BUCKET_NAME, 'Key': object_name, 'ContentType': content_type},
@@ -74,14 +85,11 @@ def generate_upload_url():
             'public_url': public_url
         })
 
-    except ClientError as e:
-        app.logger.error(f"S3 hiba a link generálásakor: {e}")
-        return jsonify({"error": "Nem sikerült feltöltési linket generálni."}), 500
     except Exception as e:
         app.logger.error(f"Általános hiba a link generálásakor: {e}")
         return jsonify({"error": "Szerveroldali hiba történt."}), 500
 
-# A többi végpont változatlan
+# ... A többi végpont változatlan ...
 @app.route('/start-transcription-from-url', methods=['POST'])
 def start_transcription_from_url():
     try:
