@@ -45,6 +45,7 @@ s3_client = boto3.client(
 
 @app.route('/')
 def index():
+    """ A főoldalt jeleníti meg. """
     return render_template('index.html')
 
 @app.route('/generate-upload-url', methods=['POST'])
@@ -58,7 +59,7 @@ def generate_upload_url():
         filename = data.get('filename')
         content_type = data.get('contentType')
 
-        # JAVÍTÁS ITT: Ha a böngésző nem küld típust, adunk neki egy alapértelmezettet.
+        # JAVÍTÁS: Ha a böngésző nem küld típust, adunk neki egy alapértelmezettet.
         if not content_type:
             app.logger.warning(f"A böngésző nem küldött 'contentType'-ot a '{filename}' fájlhoz. Alapértelmezett 'application/octet-stream' használata.")
             content_type = 'application/octet-stream'
@@ -88,9 +89,9 @@ def generate_upload_url():
         app.logger.error(f"Általános hiba a link generálásakor: {e}")
         return jsonify({"error": "Szerveroldali hiba történt."}), 500
 
-# ... A többi végpont változatlan ...
 @app.route('/start-transcription-from-url', methods=['POST'])
 def start_transcription_from_url():
+    """ Elindítja az átírást egy URL-ről a Speechmatics segítségével. """
     try:
         data = request.get_json()
         url = data.get('url')
@@ -99,8 +100,14 @@ def start_transcription_from_url():
         if not all([url, api_key]):
             return jsonify({"error": "Hiányzó URL vagy API kulcs."}), 400
         settings = ConnectionSettings(url="https://asr.api.speechmatics.com/v2", auth_token=api_key)
-        full_config = {"type": "transcription", "transcription_config": {"language": language}, "fetch_data": {"url": url}}
+        # A konfigurációt egy szótárként adjuk át
+        full_config = {
+            "type": "transcription",
+            "transcription_config": {"language": language},
+            "fetch_data": {"url": url}
+        }
         with BatchClient(settings) as client:
+            # Az audio paraméter None, mert a konfigurációban adjuk meg az URL-t
             job_id = client.submit_job(audio=None, transcription_config=full_config)
         return jsonify({"job_id": job_id}), 200
     except HTTPStatusError as e:
@@ -113,6 +120,7 @@ def start_transcription_from_url():
 
 @app.route('/transcription-status/<job_id>')
 def transcription_status(job_id):
+    """ Lekérdezi egy átírási feladat állapotát és eredményét. """
     try:
         api_key = request.args.get('apiKey')
         if not api_key:
@@ -122,6 +130,7 @@ def transcription_status(job_id):
             job_details = client.check_job_status(job_id)
             status = job_details.get("job", {}).get("status")
             if status == "done":
+                # Ha kész, lekérjük az SRT formátumú eredményt
                 srt_content = client.wait_for_completion(job_id, transcription_format="srt")
                 return jsonify({"status": "done", "srt_content": srt_content})
             elif status in ["rejected", "error"]:
@@ -139,37 +148,59 @@ def transcription_status(job_id):
 
 @app.route('/translate', methods=['POST'])
 def translate():
+    """ Lefordítja az SRT szöveget a Gemini API segítségével, videó kontextust is felhasználva. """
     try:
         srt_text = request.form.get('srtText')
         gemini_api_key = request.form.get('geminiApiKey')
-        target_language = request.form.get('targetLanguage', 'magyarra')
+        target_language = request.form.get('targetLanguage', 'magyar') # 'magyarra' helyett 'magyar'
         video_file = request.files.get('videoContextFile')
+
         if not all([srt_text, gemini_api_key]):
             return jsonify({"error": "Hiányzó SRT szöveg vagy Gemini API kulcs."}), 400
+
         genai.configure(api_key=gemini_api_key)
         model = genai.GenerativeModel('gemini-1.5-flash')
-        prompt_parts = [f"Fordítsd le a következő SRT feliratot erre a nyelvre: {target_language}. A formátumot és az időbélyegeket pontosan tartsd meg, csak a szöveget fordítsd. A fordítás legyen természetes és gördülékeny. Eredeti szöveg:\n\n{srt_text}"]
+
+        # JAVÍTOTT PROMPT: A célnyelvet egyértelműbben adjuk meg.
+        prompt_text = (
+            f"Célnyelv: {target_language}.\n\n"
+            f"Feladat: Fordítsd le a megadott SRT feliratot. A formátumot és az időbélyegeket pontosan tartsd meg, csak a szöveget fordítsd.\n\n"
+            f"Stílus: A fordítás legyen gördülékeny, természetes, és illeszkedjen a videó kontextusához. A stílus legyen szexuálisan túlfűtött, "
+            f"vágykeltő, és használjon bátran szlenget, valamint trágár kifejezéseket, hogy a párbeszéd életszerű és mocskos legyen. Ne szó szerint fordíts!\n\n"
+            f"Eredeti szöveg:\n\n{srt_text}"
+        )
+        prompt_parts = [prompt_text]
+
         if video_file:
             filename = secure_filename(video_file.filename)
             filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
             video_file.save(filepath)
+
+            # Fájl feltöltése és feldolgozásának megvárása
             video_file_data = genai.upload_file(path=filepath)
             while video_file_data.state.name == "PROCESSING":
                 time.sleep(2)
                 video_file_data = genai.get_file(video_file_data.name)
+            
             if video_file_data.state.name == "FAILED":
                  return jsonify({"error": "A videófájl feltöltése a Geminihez sikertelen."}), 500
+
+            # A videó kontextus hozzáadása a prompthoz
             prompt_parts.insert(0, video_file_data)
-            prompt_parts.insert(1, "\nA videó kontextusa segít a pontosabb fordításban.")
+            prompt_parts.insert(1, "A videó kontextusként szolgál a pontosabb és stílusban megfelelő fordításhoz.\n\n")
+            
             response = model.generate_content(prompt_parts)
-            os.remove(filepath)
+            os.remove(filepath) # Ideiglenes fájl törlése
         else:
             response = model.generate_content(prompt_parts)
+
         return jsonify({"translated_text": response.text})
+
     except Exception as e:
         app.logger.error(f"Gemini fordítási hiba: {e}")
         return jsonify({"error": f"Hiba a Gemini fordítás során: {e}"}), 500
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5001)
+
 
