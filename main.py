@@ -2,9 +2,18 @@ import os
 import boto3
 from botocore.client import Config
 from botocore.exceptions import ClientError
-from flask import Flask, request, jsonify, render_template
+from flask import Flask, request, jsonify, render_template, url_for
 from werkzeug.utils import secure_filename
 import time
+
+# --- ÚJ: CORS import ---
+from flask_cors import CORS
+
+# Google Drive importok
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
+from googleapiclient.errors import HttpError
 
 # Speechmatics importok
 from speechmatics.batch_client import BatchClient
@@ -14,84 +23,99 @@ from httpx import HTTPStatusError
 # Gemini importok
 import google.generativeai as genai
 
-# --- Flask és Storj/S3 beállítások ---
-app = Flask(__name__)
+# --- Flask és beállítások ---
+# A static_folder='static' beállítás biztosítja, hogy a /static útvonal működjön
+app = Flask(__name__, static_folder='static') 
+# --- ÚJ: CORS aktiválása az alkalmazáson ---
+CORS(app)
+
 UPLOAD_FOLDER = 'temp_uploads'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
-S3_ENDPOINT_URL = os.getenv('S3_ENDPOINT_URL')
-S3_ACCESS_KEY_ID = os.getenv('S3_ACCESS_KEY_ID')
-S3_SECRET_ACCESS_KEY = os.getenv('S3_SECRET_ACCESS_KEY')
-S3_BUCKET_NAME = os.getenv('S3_BUCKET_NAME')
+# Google Drive beállítások
+SCOPES = ['https://www.googleapis.com/auth/drive.file']
+SERVICE_ACCOUNT_FILE = 'service_account.json'
+DRIVE_FOLDER_ID = os.getenv('DRIVE_FOLDER_ID') 
 
-required_env_vars = {
-    "S3_ENDPOINT_URL": S3_ENDPOINT_URL,
-    "S3_ACCESS_KEY_ID": S3_ACCESS_KEY_ID,
-    "S3_SECRET_ACCESS_KEY": S3_SECRET_ACCESS_KEY,
-    "S3_BUCKET_NAME": S3_BUCKET_NAME
-}
-missing_vars = [key for key, value in required_env_vars.items() if value is None]
-if missing_vars:
-    raise ValueError(f"Hiányzó környezeti változók: {', '.join(missing_vars)}.")
+# Google Drive Service inicializálása
+try:
+    # Fontos ellenőrzés: Létezik-e a DRIVE_FOLDER_ID?
+    if not DRIVE_FOLDER_ID:
+        raise ValueError("A DRIVE_FOLDER_ID környezeti változó nincs beállítva a Renderen!")
+        
+    drive_credentials = service_account.Credentials.from_service_account_file(
+        SERVICE_ACCOUNT_FILE, scopes=SCOPES)
+    drive_service = build('drive', 'v3', credentials=drive_credentials)
+except FileNotFoundError:
+    drive_service = None
+    app.logger.warning("service_account.json nem található. A Google Drive feltöltés nem fog működni.")
+except Exception as e:
+    drive_service = None
+    app.logger.error(f"Hiba a Google Drive szolgáltatás inicializálásakor: {e}")
 
-s3_client = boto3.client(
-    's3',
-    endpoint_url=S3_ENDPOINT_URL,
-    aws_access_key_id=S3_ACCESS_KEY_ID,
-    aws_secret_access_key=S3_SECRET_ACCESS_KEY,
-    config=Config(signature_version='s3v4')
-)
 
 @app.route('/')
 def index():
     """ A főoldalt jeleníti meg. """
     return render_template('index.html')
 
-@app.route('/generate-upload-url', methods=['POST'])
-def generate_upload_url():
-    """ Generál egy biztonságos URL-t a fájl közvetlen feltöltéséhez a Storj-ra. """
+# --- A static route explicit definiálása (biztonság kedvéért) ---
+@app.route('/static/<path:path>')
+def send_static(path):
+    return app.send_static_file(path)
+
+# --- Az összes többi végpont változatlan marad ---
+
+@app.route('/upload-to-drive', methods=['POST'])
+def upload_to_drive():
+    """ Fogad egy fájlt, feltölti a Google Drive-ra, és visszaad egy nyilvános linket. """
+    if not drive_service:
+        return jsonify({"error": "A Google Drive szolgáltatás nincs konfigurálva a szerveren."}), 500
+        
+    if 'file' not in request.files:
+        return jsonify({"error": "Nincs fájl a kérésben."}), 400
+
+    file = request.files['file']
+    if file.filename == '':
+        return jsonify({"error": "Nincs kiválasztott fájl."}), 400
+
+    filename = secure_filename(file.filename)
+    filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+    
     try:
-        data = request.get_json()
-        if not data:
-            return jsonify({"error": "Érvénytelen kérés formátum."}), 400
-
-        filename = data.get('filename')
-        content_type = data.get('contentType')
-
-        # JAVÍTÁS: Ha a böngésző nem küld típust, adunk neki egy alapértelmezettet.
-        if not content_type:
-            app.logger.warning(f"A böngésző nem küldött 'contentType'-ot a '{filename}' fájlhoz. Alapértelmezett 'application/octet-stream' használata.")
-            content_type = 'application/octet-stream'
+        file.save(filepath)
+        file_metadata = {'name': filename, 'parents': [DRIVE_FOLDER_ID]}
+        media = MediaFileUpload(filepath, resumable=True)
         
-        if not filename:
-            return jsonify({"error": "Hiányzó fájlnév."}), 400
+        uploaded_file = drive_service.files().create(
+            body=file_metadata,
+            media_body=media,
+            fields='id, webViewLink, webContentLink'
+        ).execute()
 
-        object_name = f"{int(time.time())}-{secure_filename(filename)}"
-
-        upload_url = s3_client.generate_presigned_url(
-            'put_object',
-            Params={'Bucket': S3_BUCKET_NAME, 'Key': object_name, 'ContentType': content_type},
-            ExpiresIn=3600
-        )
+        file_id = uploaded_file.get('id')
+        permission = {'type': 'anyone', 'role': 'reader'}
+        drive_service.permissions().create(fileId=file_id, body=permission).execute()
         
-        public_url = f"{S3_ENDPOINT_URL}/{S3_BUCKET_NAME}/{object_name}"
+        updated_file = drive_service.files().get(fileId=file_id, fields='webContentLink').execute()
+        public_url = updated_file.get('webContentLink')
 
-        return jsonify({
-            'upload_url': upload_url,
-            'public_url': public_url
-        })
+        return jsonify({'public_url': public_url})
 
-    except ClientError as e:
-        app.logger.error(f"S3 hiba a link generálásakor: {e}")
-        return jsonify({"error": "Nem sikerült feltöltési linket generálni."}), 500
+    except HttpError as e:
+        app.logger.error(f"Google Drive API hiba: {e}")
+        return jsonify({"error": f"Hiba a Google Drive API-val való kommunikáció során: {e.content.decode()}"}), 500
     except Exception as e:
-        app.logger.error(f"Általános hiba a link generálásakor: {e}")
-        return jsonify({"error": "Szerveroldali hiba történt."}), 500
+        app.logger.error(f"Feltöltési hiba: {e}")
+        return jsonify({"error": "Szerveroldali hiba történt a feltöltés során."}), 500
+    finally:
+        if os.path.exists(filepath):
+            os.remove(filepath)
 
+# ... A többi végpont (start-transcription-from-url, transcription-status, translate) itt következik, változatlanul ...
 @app.route('/start-transcription-from-url', methods=['POST'])
 def start_transcription_from_url():
-    """ Elindítja az átírást egy URL-ről a Speechmatics segítségével. """
     try:
         data = request.get_json()
         url = data.get('url')
@@ -100,14 +124,12 @@ def start_transcription_from_url():
         if not all([url, api_key]):
             return jsonify({"error": "Hiányzó URL vagy API kulcs."}), 400
         settings = ConnectionSettings(url="https://asr.api.speechmatics.com/v2", auth_token=api_key)
-        # A konfigurációt egy szótárként adjuk át
         full_config = {
             "type": "transcription",
             "transcription_config": {"language": language},
             "fetch_data": {"url": url}
         }
         with BatchClient(settings) as client:
-            # Az audio paraméter None, mert a konfigurációban adjuk meg az URL-t
             job_id = client.submit_job(audio=None, transcription_config=full_config)
         return jsonify({"job_id": job_id}), 200
     except HTTPStatusError as e:
@@ -120,7 +142,6 @@ def start_transcription_from_url():
 
 @app.route('/transcription-status/<job_id>')
 def transcription_status(job_id):
-    """ Lekérdezi egy átírási feladat állapotát és eredményét. """
     try:
         api_key = request.args.get('apiKey')
         if not api_key:
@@ -130,7 +151,6 @@ def transcription_status(job_id):
             job_details = client.check_job_status(job_id)
             status = job_details.get("job", {}).get("status")
             if status == "done":
-                # Ha kész, lekérjük az SRT formátumú eredményt
                 srt_content = client.wait_for_completion(job_id, transcription_format="srt")
                 return jsonify({"status": "done", "srt_content": srt_content})
             elif status in ["rejected", "error"]:
@@ -148,11 +168,10 @@ def transcription_status(job_id):
 
 @app.route('/translate', methods=['POST'])
 def translate():
-    """ Lefordítja az SRT szöveget a Gemini API segítségével, videó kontextust is felhasználva. """
     try:
         srt_text = request.form.get('srtText')
         gemini_api_key = request.form.get('geminiApiKey')
-        target_language = request.form.get('targetLanguage', 'magyar') # 'magyarra' helyett 'magyar'
+        target_language = request.form.get('targetLanguage', 'magyar')
         video_file = request.files.get('videoContextFile')
 
         if not all([srt_text, gemini_api_key]):
@@ -160,8 +179,7 @@ def translate():
 
         genai.configure(api_key=gemini_api_key)
         model = genai.GenerativeModel('gemini-1.5-flash')
-
-        # JAVÍTOTT PROMPT: A célnyelvet egyértelműbben adjuk meg.
+        
         prompt_text = (
             f"Célnyelv: {target_language}.\n\n"
             f"Feladat: Fordítsd le a megadott SRT feliratot. A formátumot és az időbélyegeket pontosan tartsd meg, csak a szöveget fordítsd.\n\n"
@@ -176,7 +194,6 @@ def translate():
             filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
             video_file.save(filepath)
 
-            # Fájl feltöltése és feldolgozásának megvárása
             video_file_data = genai.upload_file(path=filepath)
             while video_file_data.state.name == "PROCESSING":
                 time.sleep(2)
@@ -185,12 +202,11 @@ def translate():
             if video_file_data.state.name == "FAILED":
                  return jsonify({"error": "A videófájl feltöltése a Geminihez sikertelen."}), 500
 
-            # A videó kontextus hozzáadása a prompthoz
             prompt_parts.insert(0, video_file_data)
             prompt_parts.insert(1, "A videó kontextusként szolgál a pontosabb és stílusban megfelelő fordításhoz.\n\n")
             
             response = model.generate_content(prompt_parts)
-            os.remove(filepath) # Ideiglenes fájl törlése
+            os.remove(filepath)
         else:
             response = model.generate_content(prompt_parts)
 
@@ -200,7 +216,7 @@ def translate():
         app.logger.error(f"Gemini fordítási hiba: {e}")
         return jsonify({"error": f"Hiba a Gemini fordítás során: {e}"}), 500
 
-if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5001)
 
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
 
