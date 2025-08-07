@@ -36,7 +36,7 @@ app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 # Google Drive beállítások
 SCOPES = ['https://www.googleapis.com/auth/drive.file']
 SERVICE_ACCOUNT_FILE = 'service_account.json'
-DRIVE_FOLDER_ID = os.getenv('DRIVE_FOLDER_ID') 
+DRIVE_FOLDER_ID = os.getenv('/drive/folders/1zECt5qdEXc3MumMU8cxbl06XhilyKfqL') 
 
 # Google Drive Service inicializálása
 try:
