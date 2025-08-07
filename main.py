@@ -6,7 +6,7 @@ from flask import Flask, request, jsonify, render_template, url_for
 from werkzeug.utils import secure_filename
 import time
 
-# --- ÚJ: CORS import ---
+# CORS import
 from flask_cors import CORS
 
 # Google Drive importok
@@ -23,10 +23,8 @@ from httpx import HTTPStatusError
 # Gemini importok
 import google.generativeai as genai
 
-# --- Flask és beállítások ---
-# A static_folder='static' beállítás biztosítja, hogy a /static útvonal működjön
+# Flask és beállítások
 app = Flask(__name__, static_folder='static') 
-# --- ÚJ: CORS aktiválása az alkalmazáson ---
 CORS(app)
 
 UPLOAD_FOLDER = 'temp_uploads'
@@ -36,11 +34,11 @@ app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 # Google Drive beállítások
 SCOPES = ['https://www.googleapis.com/auth/drive.file']
 SERVICE_ACCOUNT_FILE = 'service_account.json'
-DRIVE_FOLDER_ID = os.getenv('/drive/folders/1zECt5qdEXc3MumMU8cxbl06XhilyKfqL') 
+# A Drive ID-t a Render környezeti változójából olvassuk!
+DRIVE_FOLDER_ID = os.getenv('DRIVE_FOLDER_ID') 
 
 # Google Drive Service inicializálása
 try:
-    # Fontos ellenőrzés: Létezik-e a DRIVE_FOLDER_ID?
     if not DRIVE_FOLDER_ID:
         raise ValueError("A DRIVE_FOLDER_ID környezeti változó nincs beállítva a Renderen!")
         
@@ -60,16 +58,12 @@ def index():
     """ A főoldalt jeleníti meg. """
     return render_template('index.html')
 
-# --- A static route explicit definiálása (biztonság kedvéért) ---
 @app.route('/static/<path:path>')
 def send_static(path):
     return app.send_static_file(path)
 
-# --- Az összes többi végpont változatlan marad ---
-
 @app.route('/upload-to-drive', methods=['POST'])
 def upload_to_drive():
-    """ Fogad egy fájlt, feltölti a Google Drive-ra, és visszaad egy nyilvános linket. """
     if not drive_service:
         return jsonify({"error": "A Google Drive szolgáltatás nincs konfigurálva a szerveren."}), 500
         
@@ -91,7 +85,7 @@ def upload_to_drive():
         uploaded_file = drive_service.files().create(
             body=file_metadata,
             media_body=media,
-            fields='id, webViewLink, webContentLink'
+            fields='id, webContentLink'
         ).execute()
 
         file_id = uploaded_file.get('id')
@@ -105,15 +99,14 @@ def upload_to_drive():
 
     except HttpError as e:
         app.logger.error(f"Google Drive API hiba: {e}")
-        return jsonify({"error": f"Hiba a Google Drive API-val való kommunikáció során: {e.content.decode()}"}), 500
+        return jsonify({"error": f"Hiba a Google Drive API-val: {e.content.decode()}"}), 500
     except Exception as e:
         app.logger.error(f"Feltöltési hiba: {e}")
-        return jsonify({"error": "Szerveroldali hiba történt a feltöltés során."}), 500
+        return jsonify({"error": "Szerveroldali hiba a feltöltés során."}), 500
     finally:
         if os.path.exists(filepath):
             os.remove(filepath)
 
-# ... A többi végpont (start-transcription-from-url, transcription-status, translate) itt következik, változatlanul ...
 @app.route('/start-transcription-from-url', methods=['POST'])
 def start_transcription_from_url():
     try:
@@ -160,7 +153,6 @@ def transcription_status(job_id):
                 return jsonify({"status": status})
     except HTTPStatusError as e:
         error_details = e.response.json().get("detail") or "Ismeretlen API hiba"
-        app.logger.error(f"Státusz lekérdezési hiba: {error_details}")
         return jsonify({"error": error_details}), e.response.status_code
     except Exception as e:
         app.logger.error(f"Státusz lekérdezési hiba: {e}")
@@ -219,4 +211,3 @@ def translate():
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
-
