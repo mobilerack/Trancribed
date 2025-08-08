@@ -8,3 +8,5 @@ google-generativeai
 boto3
 gunicorn
 Flask-CORS
+
+
