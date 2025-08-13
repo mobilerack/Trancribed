@@ -5,8 +5,6 @@ google-auth-oauthlib
 speechmatics-python
 httpx
 google-generativeai
-boto3
 gunicorn
 Flask-CORS
-
-
+yt-dlp
