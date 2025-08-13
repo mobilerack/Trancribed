@@ -1,29 +1,15 @@
 import os
-import boto3
-from botocore.client import Config
-from botocore.exceptions import ClientError
-from flask import Flask, request, jsonify, render_template, url_for
+from flask import Flask, request, jsonify, render_template
 from werkzeug.utils import secure_filename
 import time
 
-# CORS import
 from flask_cors import CORS
-
-# Google Drive importok
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
-from googleapiclient.errors import HttpError
-
-# Speechmatics importok
+import yt_dlp
 from speechmatics.batch_client import BatchClient
 from speechmatics.models import ConnectionSettings
 from httpx import HTTPStatusError
-
-# Gemini importok
 import google.generativeai as genai
 
-# Flask és beállítások
 app = Flask(__name__, static_folder='static') 
 CORS(app)
 
@@ -31,106 +17,95 @@ UPLOAD_FOLDER = 'temp_uploads'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
-# Google Drive beállítások
-SCOPES = ['https://www.googleapis.com/auth/drive.file']
-SERVICE_ACCOUNT_FILE = 'service_account.json'
-# A Drive ID-t a Render környezeti változójából olvassuk!
-DRIVE_FOLDER_ID = os.getenv('DRIVE_FOLDER_ID') 
-
-# Google Drive Service inicializálása
-try:
-    if not DRIVE_FOLDER_ID:
-        raise ValueError("A DRIVE_FOLDER_ID környezeti változó nincs beállítva a Renderen!")
-        
-    drive_credentials = service_account.Credentials.from_service_account_file(
-        SERVICE_ACCOUNT_FILE, scopes=SCOPES)
-    drive_service = build('drive', 'v3', credentials=drive_credentials)
-except FileNotFoundError:
-    drive_service = None
-    app.logger.warning("service_account.json nem található. A Google Drive feltöltés nem fog működni.")
-except Exception as e:
-    drive_service = None
-    app.logger.error(f"Hiba a Google Drive szolgáltatás inicializálásakor: {e}")
-
-
 @app.route('/')
 def index():
-    """ A főoldalt jeleníti meg. """
     return render_template('index.html')
 
 @app.route('/static/<path:path>')
 def send_static(path):
     return app.send_static_file(path)
 
-@app.route('/upload-to-drive', methods=['POST'])
-def upload_to_drive():
-    if not drive_service:
-        return jsonify({"error": "A Google Drive szolgáltatás nincs konfigurálva a szerveren."}), 500
-        
-    if 'file' not in request.files:
-        return jsonify({"error": "Nincs fájl a kérésben."}), 400
+# --- ÚJ VÉGPONT: Letöltési linkek és formátumok lekérése ---
+@app.route('/get-download-links', methods=['POST'])
+def get_download_links():
+    data = request.get_json()
+    page_url = data.get('page_url')
+    if not page_url:
+        return jsonify({"error": "Hiányzó weboldal URL."}), 400
 
-    file = request.files['file']
-    if file.filename == '':
-        return jsonify({"error": "Nincs kiválasztott fájl."}), 400
-
-    filename = secure_filename(file.filename)
-    filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-    
     try:
-        file.save(filepath)
-        file_metadata = {'name': filename, 'parents': [DRIVE_FOLDER_ID]}
-        media = MediaFileUpload(filepath, resumable=True)
+        app.logger.info(f"Letöltési formátumok keresése a következőhöz: {page_url}")
+        ydl_opts = {'quiet': True}
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(page_url, download=False)
         
-        uploaded_file = drive_service.files().create(
-            body=file_metadata,
-            media_body=media,
-            fields='id, webContentLink'
-        ).execute()
-
-        file_id = uploaded_file.get('id')
-        permission = {'type': 'anyone', 'role': 'reader'}
-        drive_service.permissions().create(fileId=file_id, body=permission).execute()
+        formats = []
+        # A 'formats' listából kinyerjük a releváns adatokat
+        for f in info.get('formats', []):
+            # Csak a videóval rendelkező, letölthető formátumokat listázzuk
+            if f.get('vcodec') != 'none' and f.get('url'):
+                formats.append({
+                    'format_id': f.get('format_id'),
+                    'ext': f.get('ext'),
+                    'resolution': f.get('resolution'),
+                    'note': f.get('format_note', 'N/A'),
+                    'filesize': f.get('filesize') or f.get('filesize_approx'),
+                    'url': f.get('url')
+                })
         
-        updated_file = drive_service.files().get(fileId=file_id, fields='webContentLink').execute()
-        public_url = updated_file.get('webContentLink')
+        # Eltávolítjuk a duplikált felbontásokat, a jobbat tartjuk meg
+        unique_formats = {f['resolution']: f for f in sorted(formats, key=lambda x: x.get('filesize') or 0, reverse=True)}.values()
 
-        return jsonify({'public_url': public_url})
+        return jsonify(list(unique_formats))
 
-    except HttpError as e:
-        app.logger.error(f"Google Drive API hiba: {e}")
-        return jsonify({"error": f"Hiba a Google Drive API-val: {e.content.decode()}"}), 500
     except Exception as e:
-        app.logger.error(f"Feltöltési hiba: {e}")
-        return jsonify({"error": "Szerveroldali hiba a feltöltés során."}), 500
-    finally:
-        if os.path.exists(filepath):
-            os.remove(filepath)
+        app.logger.error(f"Hiba a letöltési linkek kinyerésekor: {e}")
+        return jsonify({"error": "Nem sikerült letöltési opciókat találni a megadott URL-hez."}), 500
 
-@app.route('/start-transcription-from-url', methods=['POST'])
-def start_transcription_from_url():
+
+@app.route('/process-page-url', methods=['POST'])
+def process_page_url():
+    data = request.get_json()
+    page_url = data.get('page_url')
+    api_key = data.get('apiKey')
+    language = data.get('language')
+
+    if not all([page_url, api_key, language]):
+        return jsonify({"error": "Hiányzó weboldal URL, API kulcs vagy nyelv."}), 400
+
     try:
-        data = request.get_json()
-        url = data.get('url')
-        api_key = data.get('apiKey')
-        language = data.get('language', 'hu')
-        if not all([url, api_key]):
-            return jsonify({"error": "Hiányzó URL vagy API kulcs."}), 400
+        app.logger.info(f"Közvetlen link keresése a következőhöz: {page_url}")
+        ydl_opts = {'format': 'bestaudio/best', 'quiet': True}
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(page_url, download=False)
+            direct_media_url = info.get('url')
+        
+        if not direct_media_url:
+            return jsonify({"error": "Nem sikerült közvetlen média linket kinyerni az URL-ből."}), 500
+        
+        app.logger.info(f"Sikeresen kinyert link: {direct_media_url[:50]}...")
+
         settings = ConnectionSettings(url="https://asr.api.speechmatics.com/v2", auth_token=api_key)
         full_config = {
             "type": "transcription",
             "transcription_config": {"language": language},
-            "fetch_data": {"url": url}
+            "fetch_data": {"url": direct_media_url}
         }
         with BatchClient(settings) as client:
             job_id = client.submit_job(audio=None, transcription_config=full_config)
+        
+        app.logger.info(f"Speechmatics feladat elküldve, Job ID: {job_id}")
         return jsonify({"job_id": job_id}), 200
+
+    except yt_dlp.utils.DownloadError as e:
+        app.logger.error(f"yt-dlp hiba: {e}")
+        return jsonify({"error": "A megadott URL nem támogatott vagy nem található."}), 400
     except HTTPStatusError as e:
         error_details = e.response.json().get("detail") or "Ismeretlen API hiba"
         app.logger.error(f"Speechmatics API hiba: {error_details}")
         return jsonify({"error": error_details}), e.response.status_code
     except Exception as e:
-        app.logger.error(f"URL átírási hiba: {e}")
+        app.logger.error(f"Általános hiba a feldolgozás során: {e}")
         return jsonify({"error": "Ismeretlen szerveroldali hiba történt."}), 500
 
 @app.route('/transcription-status/<job_id>')
@@ -211,3 +186,4 @@ def translate():
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
+
