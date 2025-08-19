@@ -69,6 +69,21 @@
             </button>
         </div>
     </div>
+    <!-- ÚJ: GOOGLE DRIVE FELTÖLTÉS -->
+    <div class="card mt-4">
+        <div class="card-header fw-bold">1/b. Fájl feltöltése Google Drive-ra és átírás</div>
+        <div class="card-body">
+            <button id="googleLoginBtn" class="btn btn-outline-danger w-100 mb-3">Google bejelentkezés</button>
+            
+            <label for="driveFileInput" class="form-label">Videó vagy hangfájl kiválasztása:</label>
+            <input type="file" id="driveFileInput" class="form-control mb-3" accept="audio/*,video/*">
+            
+            <button id="uploadToDriveBtn" class="btn btn-warning w-100">
+                Feltöltés és átírás indítása
+                <div id="driveUploadSpinner" class="spinner-border spinner-border-sm d-none" role="status"></div>
+            </button>
+        </div>
+    </div>
 
     <!-- EREDMÉNY -->
     <div class="card">
