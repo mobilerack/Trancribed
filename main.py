@@ -1,22 +1,43 @@
 import os
-from flask import Flask, request, jsonify, render_template
-from werkzeug.utils import secure_filename
 import time
-
+import pathlib
+import json
+from flask import Flask, request, jsonify, render_template, session
+from werkzeug.utils import secure_filename
 from flask_cors import CORS
+
 import yt_dlp
 from speechmatics.batch_client import BatchClient
 from speechmatics.models import ConnectionSettings
 from httpx import HTTPStatusError
 import google.generativeai as genai
 
+# Google Auth
+import google.oauth2.credentials
+from google_auth_oauthlib.flow import Flow
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
+
+# Flask app init
 app = Flask(__name__, static_folder='static') 
 CORS(app)
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "supersecret")  # kell a session-höz
 
 UPLOAD_FOLDER = 'temp_uploads'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
+# -------------------
+# Google OAuth2 Setup
+# -------------------
+CLIENT_SECRETS_FILE = "client_secret.json"   # ezt Google Cloud Console-ból kell letölteni
+SCOPES = ["https://www.googleapis.com/auth/drive.file"]
+REDIRECT_URI = "http://localhost:10000/oauth2callback"  # deploy esetén domainhez kell igazítani
+
+
+# -------------------
+# Routes
+# -------------------
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -25,7 +46,119 @@ def index():
 def send_static(path):
     return app.send_static_file(path)
 
-# --- ÚJ VÉGPONT: Letöltési linkek és formátumok lekérése ---
+
+# -------------------
+# Új: Google OAuth2 Login
+# -------------------
+@app.route("/login")
+def login():
+    flow = Flow.from_client_secrets_file(
+        CLIENT_SECRETS_FILE,
+        scopes=SCOPES,
+        redirect_uri=REDIRECT_URI
+    )
+    authorization_url, state = flow.authorization_url(
+        access_type="offline",
+        include_granted_scopes="true"
+    )
+    session["state"] = state
+    return jsonify({"auth_url": authorization_url})
+
+
+@app.route("/oauth2callback")
+def oauth2callback():
+    state = session.get("state")
+    flow = Flow.from_client_secrets_file(
+        CLIENT_SECRETS_FILE,
+        scopes=SCOPES,
+        state=state,
+        redirect_uri=REDIRECT_URI
+    )
+    flow.fetch_token(authorization_response=request.url)
+
+    credentials = flow.credentials
+    session['credentials'] = {
+        "token": credentials.token,
+        "refresh_token": credentials.refresh_token,
+        "token_uri": credentials.token_uri,
+        "client_id": credentials.client_id,
+        "client_secret": credentials.client_secret,
+        "scopes": credentials.scopes
+    }
+    return "✅ Sikeres Google Drive bejelentkezés! Most már feltölthetsz fájlt."
+
+
+# -------------------
+# Fájl feltöltés → Google Drive
+# -------------------
+@app.route("/upload-to-drive", methods=["POST"])
+def upload_to_drive():
+    if "credentials" not in session:
+        return jsonify({"error": "Nincs Google Drive bejelentkezés."}), 401
+
+    credentials = google.oauth2.credentials.Credentials(**session['credentials'])
+    drive_service = build("drive", "v3", credentials=credentials)
+
+    if "file" not in request.files:
+        return jsonify({"error": "Nincs fájl a kérésben."}), 400
+
+    file = request.files["file"]
+    filepath = os.path.join(app.config['UPLOAD_FOLDER'], secure_filename(file.filename))
+    file.save(filepath)
+
+    file_metadata = {"name": file.filename}
+    media = MediaFileUpload(filepath, resumable=True)
+    uploaded_file = drive_service.files().create(
+        body=file_metadata, 
+        media_body=media, 
+        fields="id"
+    ).execute()
+
+    # publikus hozzáférés engedélyezése
+    drive_service.permissions().create(
+        fileId=uploaded_file.get("id"),
+        body={"role": "reader", "type": "anyone"}
+    ).execute()
+
+    file_url = f"https://drive.google.com/uc?id={uploaded_file.get('id')}&export=download"
+
+    os.remove(filepath)  # törlés a szerverről
+
+    return jsonify({"file_url": file_url})
+
+
+# -------------------
+# Drive → Speechmatics feldolgozás
+# -------------------
+@app.route("/process-drive-file", methods=["POST"])
+def process_drive_file():
+    data = request.get_json()
+    api_key = data.get("apiKey")
+    file_url = data.get("file_url")
+    language = data.get("language")
+
+    if not all([api_key, file_url, language]):
+        return jsonify({"error": "Hiányzó adat (API kulcs, file_url, language)."}), 400
+
+    try:
+        settings = ConnectionSettings(url="https://asr.api.speechmatics.com/v2", auth_token=api_key)
+        full_config = {
+            "type": "transcription",
+            "transcription_config": {"language": language},
+            "fetch_data": {"url": file_url}
+        }
+        with BatchClient(settings) as client:
+            job_id = client.submit_job(audio=None, transcription_config=full_config)
+
+        return jsonify({"job_id": job_id})
+    except Exception as e:
+        app.logger.error(f"Speechmatics hiba: {e}")
+        return jsonify({"error": "Nem sikerült elindítani a feldolgozást."}), 500
+
+
+# -------------------
+# Meglévő yt-dlp + Speechmatics
+# -------------------
 @app.route('/get-download-links', methods=['POST'])
 def get_download_links():
     data = request.get_json()
@@ -34,15 +167,13 @@ def get_download_links():
         return jsonify({"error": "Hiányzó weboldal URL."}), 400
 
     try:
-        app.logger.info(f"Letöltési formátumok keresése a következőhöz: {page_url}")
+        app.logger.info(f"Letöltési formátumok keresése: {page_url}")
         ydl_opts = {'quiet': True}
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(page_url, download=False)
         
         formats = []
-        # A 'formats' listából kinyerjük a releváns adatokat
         for f in info.get('formats', []):
-            # Csak a videóval rendelkező, letölthető formátumokat listázzuk
             if f.get('vcodec') != 'none' and f.get('url'):
                 formats.append({
                     'format_id': f.get('format_id'),
@@ -53,14 +184,12 @@ def get_download_links():
                     'url': f.get('url')
                 })
         
-        # Eltávolítjuk a duplikált felbontásokat, a jobbat tartjuk meg
         unique_formats = {f['resolution']: f for f in sorted(formats, key=lambda x: x.get('filesize') or 0, reverse=True)}.values()
-
         return jsonify(list(unique_formats))
 
     except Exception as e:
-        app.logger.error(f"Hiba a letöltési linkek kinyerésekor: {e}")
-        return jsonify({"error": "Nem sikerült letöltési opciókat találni a megadott URL-hez."}), 500
+        app.logger.error(f"Hiba: {e}")
+        return jsonify({"error": "Nem sikerült letöltési opciókat találni."}), 500
 
 
 @app.route('/process-page-url', methods=['POST'])
@@ -74,17 +203,15 @@ def process_page_url():
         return jsonify({"error": "Hiányzó weboldal URL, API kulcs vagy nyelv."}), 400
 
     try:
-        app.logger.info(f"Közvetlen link keresése a következőhöz: {page_url}")
+        app.logger.info(f"Közvetlen link keresése: {page_url}")
         ydl_opts = {'format': 'bestaudio/best', 'quiet': True}
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(page_url, download=False)
             direct_media_url = info.get('url')
         
         if not direct_media_url:
-            return jsonify({"error": "Nem sikerült közvetlen média linket kinyerni az URL-ből."}), 500
+            return jsonify({"error": "Nem sikerült közvetlen média linket kinyerni."}), 500
         
-        app.logger.info(f"Sikeresen kinyert link: {direct_media_url[:50]}...")
-
         settings = ConnectionSettings(url="https://asr.api.speechmatics.com/v2", auth_token=api_key)
         full_config = {
             "type": "transcription",
@@ -94,19 +221,17 @@ def process_page_url():
         with BatchClient(settings) as client:
             job_id = client.submit_job(audio=None, transcription_config=full_config)
         
-        app.logger.info(f"Speechmatics feladat elküldve, Job ID: {job_id}")
         return jsonify({"job_id": job_id}), 200
 
     except yt_dlp.utils.DownloadError as e:
-        app.logger.error(f"yt-dlp hiba: {e}")
-        return jsonify({"error": "A megadott URL nem támogatott vagy nem található."}), 400
+        return jsonify({"error": "A megadott URL nem támogatott."}), 400
     except HTTPStatusError as e:
         error_details = e.response.json().get("detail") or "Ismeretlen API hiba"
-        app.logger.error(f"Speechmatics API hiba: {error_details}")
         return jsonify({"error": error_details}), e.response.status_code
     except Exception as e:
-        app.logger.error(f"Általános hiba a feldolgozás során: {e}")
-        return jsonify({"error": "Ismeretlen szerveroldali hiba történt."}), 500
+        app.logger.error(f"Hiba: {e}")
+        return jsonify({"error": "Ismeretlen hiba."}), 500
+
 
 @app.route('/transcription-status/<job_id>')
 def transcription_status(job_id):
@@ -130,9 +255,13 @@ def transcription_status(job_id):
         error_details = e.response.json().get("detail") or "Ismeretlen API hiba"
         return jsonify({"error": error_details}), e.response.status_code
     except Exception as e:
-        app.logger.error(f"Státusz lekérdezési hiba: {e}")
-        return jsonify({"error": "Ismeretlen szerveroldali hiba történt."}), 500
+        app.logger.error(f"Státusz hiba: {e}")
+        return jsonify({"error": "Ismeretlen szerveroldali hiba."}), 500
 
+
+# -------------------
+# Gemini Translate
+# -------------------
 @app.route('/translate', methods=['POST'])
 def translate():
     try:
@@ -149,12 +278,10 @@ def translate():
         
         prompt_text = (
             f"Célnyelv: {target_language}.\n\n"
-            f"Feladat: Fordítsd le a megadott SRT feliratot. A formátumot és az időbélyegeket pontosan tartsd meg, csak a szöveget fordítsd.\n\n"
-            f"Stílus: A fordítás legyen gördülékeny, természetes, és illeszkedjen a videó kontextusához. A stílus legyen szexuálisan túlfűtött, "
-            f"vágykeltő, és használjon bátran szlenget, valamint trágár kifejezéseket, hogy a párbeszéd életszerű és mocskos legyen. Ne szó szerint fordíts!\n\n"
-            f"Eredeti szöveg:\n\n{srt_text}"
+            f"Feladat: Fordítsd le a megadott SRT feliratot. "
+            f"A formátumot és az időbélyegeket pontosan tartsd meg, csak a szöveget fordítsd."
         )
-        prompt_parts = [prompt_text]
+        prompt_parts = [prompt_text, srt_text]
 
         if video_file:
             filename = secure_filename(video_file.filename)
@@ -170,7 +297,7 @@ def translate():
                  return jsonify({"error": "A videófájl feltöltése a Geminihez sikertelen."}), 500
 
             prompt_parts.insert(0, video_file_data)
-            prompt_parts.insert(1, "A videó kontextusként szolgál a pontosabb és stílusban megfelelő fordításhoz.\n\n")
+            prompt_parts.insert(1, "A videó kontextusként szolgál a fordításhoz.\n\n")
             
             response = model.generate_content(prompt_parts)
             os.remove(filepath)
@@ -186,4 +313,3 @@ def translate():
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 10000)))
-
