@@ -11,7 +11,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const transcribeSpinner = document.getElementById('transcribeSpinner');
     const translateSpinner = document.getElementById('translateSpinner');
     const translateButton = document.getElementById('translateButton');
-    
+
     // ÚJ DOM Elemek a letöltéshez
     const downloadUrlInput = document.getElementById('downloadUrlInput');
     const getLinksButton = document.getElementById('getLinksButton');
@@ -19,6 +19,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const downloadLinksContainer = document.getElementById('downloadLinksContainer');
     const downloadModal = new bootstrap.Modal(document.getElementById('downloadModal'));
 
+    // ÚJ DOM Elemek a Google Drive integrációhoz
+    const googleLoginBtn = document.getElementById('googleLoginBtn');
+    const driveFileInput = document.getElementById('driveFileInput');
+    const uploadToDriveBtn = document.getElementById('uploadToDriveBtn');
 
     let transcriptionJobId = '';
 
@@ -43,7 +47,7 @@ document.addEventListener('DOMContentLoaded', () => {
         spinner.classList.toggle('d-none', !show);
     };
 
-    // Átírás indítása
+    // Átírás indítása URL-ből
     transcribeButton.addEventListener('click', async () => {
         const page_url = pageUrlInput.value;
         const apiKey = speechmaticsKeyInput.value;
@@ -105,7 +109,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }, 5000);
     };
-    
+
     // Fordítás
     translateButton.addEventListener('click', async () => {
         const srtText = srtEditor.value;
@@ -192,7 +196,7 @@ document.addEventListener('DOMContentLoaded', () => {
         formats.sort((a,b) => (b.filesize || 0) - (a.filesize || 0)).forEach(format => {
             const linkElement = document.createElement('a');
             linkElement.href = format.url;
-            linkElement.target = '_blank'; // Új lapon nyitja meg a letöltést
+            linkElement.target = '_blank';
             linkElement.className = 'list-group-item list-group-item-action download-link-item';
             
             const resolution = format.resolution || 'N/A';
@@ -207,7 +211,3 @@ document.addEventListener('DOMContentLoaded', () => {
                 <p class="mb-1 small text-muted">${note}</p>
             `;
             downloadLinksContainer.appendChild(linkElement);
-        });
-    }
-});
-
