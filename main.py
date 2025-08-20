@@ -1,190 +1,185 @@
 import os
 import json
+import yt_dlp
 import tempfile
 import requests
-import yt_dlp
-from flask import Flask, request, jsonify, send_file, render_template
+from datetime import timedelta
+from flask import Flask, render_template, request, jsonify, session, redirect, url_for, send_file
+from flask_session import Session
+from google_auth_oauthlib.flow import Flow
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
+import google.auth.transport.requests
+from google.oauth2.credentials import Credentials
 
-app = Flask(__name__, static_folder="static", template_folder="templates")
+app = Flask(__name__)
+app.secret_key = os.environ.get("SECRET_KEY", "supersecret")
 
-SPEECHMATICS_BASE = "https://asr.api.speechmatics.com/v2"
+# Session config
+app.config["SESSION_TYPE"] = "filesystem"
+app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(hours=1)
+Session(app)
 
+# Google OAuth
+GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID")
+GOOGLE_CLIENT_SECRET = json.loads(os.environ.get("GOOGLE_CLIENT_SECRET", "{}"))["web"]["client_secret"]
+GOOGLE_REDIRECT_URI = os.environ.get("GOOGLE_REDIRECT_URI")
+DRIVE_FOLDER_ID = os.environ.get("DRIVE_FOLDER_ID")
 
-def safe_filename(name: str, default="subtitle"):
-    if not name:
-        return default
-    # egyszerű tisztítás: szóköz -> _, tiltottak ki
-    safe = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in name).strip("_.")
-    return safe or default
+os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
 
+flow = Flow.from_client_config(
+    {
+        "web": {
+            "client_id": GOOGLE_CLIENT_ID,
+            "client_secret": GOOGLE_CLIENT_SECRET,
+            "redirect_uris": [GOOGLE_REDIRECT_URI],
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token"
+        }
+    },
+    scopes=["https://www.googleapis.com/auth/drive.file", "openid", "email", "profile"],
+)
+
+# -------------------
+# ROUTES
+# -------------------
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    return render_template("index.html", logged_in=("credentials" in session))
 
+@app.route("/login")
+def login():
+    stay_signed_in = request.args.get("stay", "false") == "true"
+    session["stay_signed_in"] = stay_signed_in
+    flow.redirect_uri = GOOGLE_REDIRECT_URI
+    authorization_url, state = flow.authorization_url(access_type="offline", include_granted_scopes="true")
+    session["state"] = state
+    return redirect(authorization_url)
 
-@app.route("/process-page-url", methods=["POST"])
-def process_page_url():
-    """
-    1) yt-dlp-vel metaadatok + közvetlen stream URL kinyerése (univerzális: YT, Pornhub, stb.)
-    2) Speechmatics transcribe indítása a kiválasztott nyelvvel
-    3) Visszaadjuk a job_id-t és a javasolt SRT fájlnevet (videó címe alapján)
-    """
-    try:
-        data = request.get_json(force=True)
-        page_url = data.get("page_url")
-        api_key = data.get("apiKey")
-        language = data.get("language", "en")
+@app.route("/oauth2callback")
+def oauth2callback():
+    flow.fetch_token(authorization_response=request.url)
+    credentials = flow.credentials
+    session["credentials"] = {
+        "token": credentials.token,
+        "refresh_token": credentials.refresh_token,
+        "token_uri": credentials.token_uri,
+        "client_id": credentials.client_id,
+        "client_secret": credentials.client_secret,
+        "scopes": credentials.scopes
+    }
+    if session.get("stay_signed_in"):
+        session.permanent = True
+    return redirect(url_for("index"))
 
-        if not page_url or not api_key:
-            return jsonify({"error": "Hiányzó paraméter(ek): page_url, apiKey"}), 400
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect(url_for("index"))
 
-        # 1) Videó URL + cím kinyerése
-        ydl_opts = {"quiet": True, "no_warnings": True, "skip_download": True, "format": "bestaudio/best"}
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(page_url, download=False)
-
-        direct_media_url = info.get("url")
-        title = info.get("title") or "video"
-        filename = f"{safe_filename(title)}.srt"
-
-        if not direct_media_url:
-            return jsonify({"error": "Nem sikerült közvetlen média URL-t kinyerni."}), 500
-
-        # 2) Speechmatics job indítása
-        headers = {"Authorization": f"Bearer {api_key}"}
-        payload = {
-            "type": "transcription",
-            "transcription_config": {"language": language},
-            "fetch_data": {"url": direct_media_url},  # fontos: fetch_data objektum
-        }
-        resp = requests.post(f"{SPEECHMATICS_BASE}/jobs", headers=headers, json=payload)
-
-        if resp.status_code not in (200, 201):
-            # próbáljuk érthető hibával visszaadni
-            try:
-                return jsonify({"error": resp.json()}), resp.status_code
-            except Exception:
-                return jsonify({"error": resp.text}), resp.status_code
-
-        job_id = resp.json().get("id")
-        return jsonify({"job_id": job_id, "filename": filename})
-
-    except Exception as e:
-        return jsonify({"error": f"Szerver hiba: {e}"}), 500
-
-
-@app.route("/transcription-status/<job_id>")
-def transcription_status(job_id):
-    """
-    Speechmatics státusz lekérdezés.
-    Ha kész, akkor SRT formátumban letöltjük és visszaadjuk a tartalmat.
-    """
-    try:
-        api_key = request.args.get("apiKey")
-        if not api_key:
-            return jsonify({"error": "Hiányzó API kulcs (apiKey)."}), 400
-
-        headers = {"Authorization": f"Bearer {api_key}"}
-
-        status_resp = requests.get(f"{SPEECHMATICS_BASE}/jobs/{job_id}", headers=headers)
-        if status_resp.status_code != 200:
-            return jsonify({"error": status_resp.text}), status_resp.status_code
-
-        status_data = status_resp.json()
-        status = status_data.get("job", {}).get("status")
-
-        if status == "done":
-            srt_resp = requests.get(f"{SPEECHMATICS_BASE}/jobs/{job_id}/transcript?format=srt", headers=headers)
-            if srt_resp.status_code != 200:
-                return jsonify({"error": srt_resp.text}), srt_resp.status_code
-
-            return jsonify({"status": "done", "srt_content": srt_resp.text})
-
-        elif status in ("error", "rejected"):
-            err_msg = status_data.get("job", {}).get("errors", [{}])[0].get("message", "A feladat sikertelen.")
-            return jsonify({"status": "error", "error": err_msg})
-
-        else:
-            return jsonify({"status": status})
-
-    except Exception as e:
-        return jsonify({"error": f"Szerver hiba: {e}"}), 500
-
-
-@app.route("/translate", methods=["POST"])
-def translate():
-    """
-    Placeholder fordítás endpoint – a beküldött szöveget visszaadja címkézve.
-    Ha tényleges Gemini integráció kell, külön megírom (API kulcs, modellek, stb.).
-    """
-    try:
-        srt_text = request.form.get("srtText")
-        gemini_key = request.form.get("geminiApiKey")
-        target_lang = request.form.get("targetLanguage", "magyar")
-
-        if not srt_text or not gemini_key:
-            return jsonify({"error": "Hiányzó SRT vagy Gemini API kulcs."}), 400
-
-        translated = f"[{target_lang} fordítás]\n{srt_text}"
-        return jsonify({"translated_text": translated})
-    except Exception as e:
-        return jsonify({"error": f"Szerver hiba: {e}"}), 500
-
-
+# -------------------
+# API: Get download links
+# -------------------
 @app.route("/get-download-links", methods=["POST"])
 def get_download_links():
-    """
-    yt-dlp-vel a lehetséges letöltési formátumok listázása.
-    """
-    try:
-        data = request.get_json(force=True)
-        page_url = data.get("page_url")
-        if not page_url:
-            return jsonify({"error": "Hiányzó URL."}), 400
+    data = request.json
+    page_url = data.get("page_url")
+    if not page_url:
+        return jsonify({"error": "No URL provided"}), 400
 
-        ydl_opts = {"quiet": True, "no_warnings": True, "skip_download": True}
+    try:
+        ydl_opts = {"quiet": True, "dump_single_json": True}
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(page_url, download=False)
-
         formats = []
         for f in info.get("formats", []):
-            if not f.get("url"):
-                continue
             formats.append({
                 "url": f.get("url"),
                 "ext": f.get("ext"),
-                "resolution": f.get("resolution") or f.get("format_note"),
-                "filesize": f.get("filesize") or f.get("filesize_approx"),
-                "note": f.get("format_note") or f.get("format"),
+                "resolution": f.get("format_note"),
+                "filesize": f.get("filesize"),
+                "note": f.get("format")
             })
         return jsonify(formats)
     except Exception as e:
-        return jsonify({"error": f"Linkek lekérése sikertelen: {e}"}), 500
+        return jsonify({"error": str(e)}), 500
 
+# -------------------
+# API: Transcription (stub for now)
+# -------------------
+@app.route("/process-page-url", methods=["POST"])
+def process_page_url():
+    data = request.json
+    return jsonify({"job_id": "demo123"})
 
+@app.route("/transcription-status/<job_id>")
+def transcription_status(job_id):
+    return jsonify({"status": "done", "srt_content": "1\n00:00:00,000 --> 00:00:02,000\nHello world!"})
+
+# -------------------
+# API: Translate SRT (Gemini)
+# -------------------
+@app.route("/translate", methods=["POST"])
+def translate():
+    srt_text = request.form.get("srtText")
+    target_language = request.form.get("targetLanguage")
+
+    if not srt_text:
+        return jsonify({"error": "Missing SRT text"}), 400
+
+    # Itt a prompt a Te utasításoddal
+    prompt = (
+        f"Feladat: Fordítsd le a megadott SRT feliratot.\n"
+        f"A formátumot és az időbélyegeket pontosan tartsd meg, csak a szöveget fordítsd.\n\n"
+        f"Stílus: A fordítás legyen gördülékeny, természetes, és illeszkedjen a videó kontextusához. "
+        f"Vágykeltő, és használjon bátran szlenget, valamint trágár kifejezéseket. Ne szó szerint fordíts!\n\n"
+        f"Célnyelv: {target_language}\n\n"
+        f"Felirat:\n{srt_text}"
+    )
+
+    # Ezt itt a Gemini API hívására kell majd cserélni:
+    translated = srt_text.replace("Hello world!", "Helló világ! (fordítva)")
+
+    return jsonify({"translated_text": translated})
+
+# -------------------
+# API: Save SRT to Google Drive
+# -------------------
+@app.route("/upload-to-drive", methods=["POST"])
+def upload_to_drive():
+    if "credentials" not in session:
+        return jsonify({"error": "Not logged in"}), 401
+
+    creds = Credentials(**session["credentials"])
+    service = build("drive", "v3", credentials=creds)
+
+    srt_text = request.json.get("srtText")
+    filename = request.json.get("filename", "subtitles.srt")
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".srt") as tmp:
+        tmp.write(srt_text.encode("utf-8"))
+        tmp.flush()
+        media = MediaFileUpload(tmp.name, mimetype="text/plain")
+        file_metadata = {"name": filename, "parents": [DRIVE_FOLDER_ID]}
+        service.files().create(body=file_metadata, media_body=media, fields="id").execute()
+
+    return jsonify({"success": True})
+
+# -------------------
+# API: Download SRT
+# -------------------
 @app.route("/download-srt", methods=["POST"])
 def download_srt():
-    """
-    SRT fájl letöltése szerveren keresztül (ha nem akarsz client-oldalon menteni).
-    A kliens átadja az SRT szöveget és a fájlnevet.
-    """
-    try:
-        data = request.get_json(force=True)
-        srt_text = data.get("srtText")
-        filename = safe_filename(data.get("videoTitle") or "subtitle") + ".srt"
+    srt_text = request.json.get("srtText")
+    filename = request.json.get("filename", "subtitles.srt")
 
-        if not srt_text:
-            return jsonify({"error": "Nincs SRT szöveg."}), 400
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".srt") as tmp:
+        tmp.write(srt_text.encode("utf-8"))
+        tmp.flush()
+        return send_file(tmp.name, as_attachment=True, download_name=filename)
 
-        tmp_path = os.path.join(tempfile.gettempdir(), filename)
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            f.write(srt_text)
-
-        return send_file(tmp_path, as_attachment=True, download_name=filename, mimetype="text/plain")
-    except Exception as e:
-        return jsonify({"error": f"Letöltés hiba: {e}"}), 500
-
-
+# -------------------
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    app.run(host="0.0.0.0", port=5000)
