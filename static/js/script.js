@@ -1,68 +1,185 @@
-    // ---------------- ÚJ: Google Drive integráció ----------------
+document.addEventListener('DOMContentLoaded', () => {
+  const speechmaticsKeyInput = document.getElementById('speechmaticsKey');
+  const geminiKeyInput = document.getElementById('geminiKey');
+  const saveSpeechmaticsKeyBtn = document.getElementById('saveSpeechmaticsKey');
+  const saveGeminiKeyBtn = document.getElementById('saveGeminiKey');
+  const pageUrlInput = document.getElementById('pageUrlInput');
+  const transcribeButton = document.getElementById('transcribeButton');
+  const srtEditor = document.getElementById('srtEditor');
+  const statusDiv = document.getElementById('status');
+  const transcribeSpinner = document.getElementById('transcribeSpinner');
+  const translateSpinner = document.getElementById('translateSpinner');
+  const translateButton = document.getElementById('translateButton');
+  const downloadSrtButton = document.getElementById('downloadSrtButton');
+  const getLinksButton = document.getElementById('getLinksButton');
+  const downloadSpinner = document.getElementById('downloadSpinner');
+  const downloadLinksContainer = document.getElementById('downloadLinksContainer');
 
-    const googleLoginBtn = document.getElementById('googleLoginBtn');
-    const driveFileInput = document.getElementById('driveFileInput');
-    const uploadToDriveBtn = document.getElementById('uploadToDriveBtn');
+  let transcriptionJobId = '';
+  let currentVideoTitle = '';
 
-    // Google bejelentkezés
-    googleLoginBtn.addEventListener('click', async () => {
-        try {
-            const response = await fetch('/login');
-            const data = await response.json();
-            if (!response.ok) throw new Error(data.error);
-            // Új ablakban megnyitjuk a Google auth oldalt
-            window.open(data.auth_url, '_blank', 'width=500,height=600');
-        } catch (error) {
-            alert(`Google bejelentkezési hiba: ${error.message}`);
-        }
-    });
+  // API kulcs mentés
+  saveSpeechmaticsKeyBtn.addEventListener('click', () => {
+    localStorage.setItem('speechmaticsApiKey', speechmaticsKeyInput.value);
+    alert('Mentve');
+  });
+  saveGeminiKeyBtn.addEventListener('click', () => {
+    localStorage.setItem('geminiApiKey', geminiKeyInput.value);
+    alert('Mentve');
+  });
+  speechmaticsKeyInput.value = localStorage.getItem('speechmaticsApiKey') || '';
+  geminiKeyInput.value = localStorage.getItem('geminiApiKey') || '';
 
-    // Feltöltés Google Drive-ra és átírás indítása
-    uploadToDriveBtn.addEventListener('click', async () => {
-        const file = driveFileInput.files[0];
+  const showStatus = (msg, type="info") => {
+    statusDiv.textContent = msg;
+    statusDiv.className = `alert alert-${type}`;
+  };
+
+  const toggleSpinner = (el, show) => {
+    el.classList.toggle('d-none', !show);
+  };
+
+  // Átírás
+  transcribeButton.addEventListener('click', async () => {
+    const page_url = pageUrlInput.value;
+    const apiKey = speechmaticsKeyInput.value;
+    if (!page_url || !apiKey) return showStatus("Adj meg URL-t és API kulcsot!", "warning");
+
+    toggleSpinner(transcribeSpinner, true);
+    transcribeButton.disabled = true;
+
+    try {
+      const res = await fetch("/process-page-url", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({page_url, apiKey})
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+
+      transcriptionJobId = data.job_id;
+      currentVideoTitle = data.video_title;
+      showStatus(`Feladat ID: ${transcriptionJobId}`, "info");
+      checkStatusLoop();
+    } catch (err) {
+      showStatus("Hiba: " + err.message, "danger");
+      toggleSpinner(transcribeSpinner, false);
+      transcribeButton.disabled = false;
+    }
+  });
+
+  const checkStatusLoop = () => {
+    const interval = setInterval(async () => {
+      if (!transcriptionJobId) return clearInterval(interval);
+      try {
         const apiKey = speechmaticsKeyInput.value;
-        const language = document.getElementById('sourceLanguageSelect').value;
-
-        if (!file) {
-            return showStatus('Válassz ki egy feltöltendő fájlt!', 'warning');
+        const res = await fetch(`/transcription-status/${transcriptionJobId}?apiKey=${apiKey}`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error);
+        if (data.status === "done") {
+          clearInterval(interval);
+          srtEditor.value = data.srt_content;
+          showStatus("Átírás kész!", "success");
+          toggleSpinner(transcribeSpinner, false);
+          transcribeButton.disabled = false;
         }
-        if (!apiKey) {
-            return showStatus('Add meg a Speechmatics API kulcsot!', 'warning');
-        }
+      } catch (err) {
+        clearInterval(interval);
+        showStatus("Státusz hiba: " + err.message, "danger");
+        toggleSpinner(transcribeSpinner, false);
+        transcribeButton.disabled = false;
+      }
+    }, 4000);
+  };
 
-        toggleSpinner(transcribeSpinner, true);
-        uploadToDriveBtn.disabled = true;
-        showStatus('Fájl feltöltése Google Drive-ra...', 'info');
+  // Fordítás
+  translateButton.addEventListener('click', async () => {
+    const srtText = srtEditor.value;
+    const geminiApiKey = geminiKeyInput.value;
+    const targetLanguage = document.getElementById("targetLanguageSelect").value;
+    if (!srtText || !geminiApiKey) return showStatus("Hiányzó adat!", "warning");
 
-        try {
-            const formData = new FormData();
-            formData.append('file', file);
+    toggleSpinner(translateSpinner, true);
+    translateButton.disabled = true;
 
-            const uploadResponse = await fetch('/upload-to-drive', {
-                method: 'POST',
-                body: formData,
-            });
-            const uploadData = await uploadResponse.json();
-            if (!uploadResponse.ok) throw new Error(uploadData.error);
+    const formData = new FormData();
+    formData.append("srtText", srtText);
+    formData.append("geminiApiKey", geminiApiKey);
+    formData.append("targetLanguage", targetLanguage);
 
-            const file_url = uploadData.file_url;
-            showStatus('Drive link kész, átírás indítása...', 'info');
+    try {
+      const res = await fetch("/translate", {method:"POST", body:formData});
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      srtEditor.value = data.translated_text;
+      showStatus("Fordítás kész!", "success");
+    } catch (err) {
+      showStatus("Fordítási hiba: " + err.message, "danger");
+    } finally {
+      toggleSpinner(translateSpinner, false);
+      translateButton.disabled = false;
+    }
+  });
 
-            const processResponse = await fetch('/process-drive-file', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ apiKey, file_url, language }),
-            });
-            const processData = await processResponse.json();
-            if (!processResponse.ok) throw new Error(processData.error);
+  // SRT letöltés
+  downloadSrtButton.addEventListener('click', async () => {
+    const srtText = srtEditor.value;
+    if (!srtText) return alert("Nincs felirat!");
 
-            transcriptionJobId = processData.job_id;
-            showStatus(`Feladat elküldve (ID: ${transcriptionJobId}). Státusz lekérdezése...`, 'info');
-            checkStatusLoop();
-
-        } catch (error) {
-            showStatus(`Hiba: ${error.message}`, 'danger');
-            toggleSpinner(transcribeSpinner, false);
-            uploadToDriveBtn.disabled = false;
-        }
+    const res = await fetch("/download-srt", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({srtText, videoTitle: currentVideoTitle})
     });
+
+    if (res.ok) {
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = (currentVideoTitle || "felirat") + ".srt";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+    } else {
+      const data = await res.json();
+      alert("Hiba: " + data.error);
+    }
+  });
+
+  // Letöltési linkek
+  getLinksButton.addEventListener('click', async () => {
+    const page_url = document.getElementById('downloadUrlInput').value;
+    if (!page_url) return alert("Adj meg URL-t!");
+
+    toggleSpinner(downloadSpinner, true);
+    getLinksButton.disabled = true;
+    downloadLinksContainer.innerHTML = "<p>Keresés...</p>";
+
+    try {
+      const res = await fetch("/get-download-links", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({page_url})
+      });
+      const formats = await res.json();
+      if (!res.ok) throw new Error(formats.error);
+
+      downloadLinksContainer.innerHTML = "";
+      formats.forEach(f => {
+        const a = document.createElement("a");
+        a.href = f.url;
+        a.target = "_blank";
+        a.className = "list-group-item list-group-item-action";
+        a.textContent = `${f.resolution || "N/A"} (${f.ext})`;
+        downloadLinksContainer.appendChild(a);
+      });
+    } catch (err) {
+      downloadLinksContainer.innerHTML = `<p class="text-danger">${err.message}</p>`;
+    } finally {
+      toggleSpinner(downloadSpinner, false);
+      getLinksButton.disabled = false;
+    }
+  });
+});
