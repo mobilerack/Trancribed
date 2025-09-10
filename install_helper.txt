@@ -1,0 +1,66 @@
+
+## Környezeti Változók (Environment Variables)
+
+Ezeket a hosting platformod "Settings" -> "Environment Variables" vagy "Secrets" menüpontjában kell beállítanod.
+
+### Kötelező változók:
+
+1.  `TRANSCRIPTION_SERVICE`
+    - **Célja:** Kiválasztja, melyik átíró szolgáltatást használja az alkalmazás.
+    - **Értékei:**
+        - `speechmatics`: A Speechmatics API-t használja. (Ehhez a frontend felületen meg kell adni az API kulcsot).
+        - `whisper`: A beépített, szerveren futó OpenAI Whisper modellt használja. (Nincs szükség API kulcsra).
+    - **Figyelem:** A `whisper` opcióhoz erős szerver kell (sok RAM, GPU ajánlott)!
+
+2.  `FLASK_SECRET_KEY`
+    - **Célja:** A felhasználói session-ök (pl. Google bejelentkezés) titkosításához szükséges.
+    - **Értéke:** Generálj egy hosszú, véletlenszerű karaktersorozatot. Pl: `openssl rand -hex 32`
+
+### Google Integrációhoz szükséges változók (opcionális):
+
+Ha szeretnéd használni a Google bejelentkezést és a Drive feltöltést, ezeket is be kell állítanod.
+
+3.  `GOOGLE_CLIENT_ID`
+    - **Célja:** A Google OAuth2 azonosításhoz.
+    - **Értéke:** A Google Cloud Console-ban létrehozott OAuth Client ID.
+
+4.  `GOOGLE_CLIENT_SECRET`
+    - **Célja:** A Google OAuth2 azonosításhoz.
+    - **Értéke:** A Google Cloud Console-ban létrehozott OAuth Client Secret.
+
+5.  `DRIVE_FOLDER_ID`
+    - **Célja:** Annak a Google Drive mappának az azonosítója, ahova a feltöltés történik.
+    - **Értéke:** Nyisd meg a mappát a Drive-on, és másold ki az azonosítót az URL-ből (`.../folders/EZ_AZ_AZONOSITO`).
+
+## Telepítési Parancsok (Build & Start Commands)
+
+A legtöbb modern hosting platform (Render, Hugging Face Spaces) automatikusan felismeri a `Dockerfile`-t és használja azt. Ilyenkor a Build és Start parancsokat üresen hagyhatod vagy nem kell megadnod.
+
+### Docker-alapú telepítés (Ajánlott):
+
+- **Build Command:** (A platform automatikusan futtatja a `Dockerfile`-t)
+- **Start Command:** (A platform automatikusan futtatja a `CMD` utasítást a `Dockerfile`-ból)
+
+### Hagyományos (nem-Docker) telepítés (pl. Render "Python" service type):
+
+- **Build Command:** `pip install -r requirements.txt`
+- **Start Command:** `gunicorn --bind 0.0.0.0:$PORT --timeout 600 main:app`
+  - (`$PORT` egy változó, amit a hosting platform automatikusan beállít.)
+
+## Platform Specifikus Útmutató
+
+### Hugging Face Spaces (Whisper futtatására a legjobb)
+
+1.  Hozz létre egy új "Space"-t.
+2.  Válaszd a "Docker" opciót, majd a "Blank" sablont.
+3.  Töltsd fel a projektfájlokat a Space repository-jába.
+4.  Menj a "Settings" -> "Repository secrets" menüpontba, és itt add meg a szükséges környezeti változókat (pl. `TRANSCRIPTION_SERVICE` -> `whisper`).
+5.  Az ingyenes CPU-s hardver lassú lesz! Komolyabb használathoz válassz egy fizetős GPU-s hardvert (pl. "T4 small").
+
+### Render.com (Speechmatics futtatására, vagy könnyű web app-okhoz)
+
+1.  Hozz létre egy új "Web Service"-t.
+2.  Kapcsold össze a GitHub repository-ddal.
+3.  A platform automatikusan felismeri a `Dockerfile`-t. Válaszd ezt a "Docker" környezetet.
+4.  Menj az "Environment" fülre, és add meg a környezeti változókat.
+5.  Állítsd a `TRANSCRIPTION_SERVICE` változót `speechmatics`-re, mivel a Render ingyenes csomagja nem elég erős a Whisperhez.
