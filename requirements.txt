@@ -1,10 +1,29 @@
-Flask
+Flask==3.0.3
 google-api-python-client
 google-auth-httplib2
 google-auth-oauthlib
+authlib
 speechmatics-python
 httpx
 google-generativeai
-gunicorn
+yt-dlp==2024.07.25
 Flask-CORS
-yt-dlp
+requests
+gunicorn
+# Whisperhez szükséges csomagok:
+torch
+transformers
+accelerate
+
+Dockerfile és .dockerignore
+Ezek a fájlok változatlanok maradnak az előző javaslathoz képest.
+Dockerfile
+FROM python:3.11-slim
+RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY . .
+ENV PORT 10000
+EXPOSE 10000
+CMD ["gunicorn", "--bind", "0.0.0.0:10000", "--timeout", "600", "main:app"]
