@@ -78,7 +78,6 @@ app.config["UPLOAD_FOLDER"] = "temp_uploads"
 os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
 
 oauth = OAuth(app)
-# ... A Google OAuth beállítások változatlanok ...
 oauth.register(
     name="google",
     client_id=os.getenv("GOOGLE_CLIENT_ID"),
@@ -105,13 +104,11 @@ def index():
 
 @app.route("/login")
 def login():
-    # ... Változatlan ...
     redirect_uri = url_for("authorize", _external=True)
     return oauth.google.authorize_redirect(redirect_uri)
 
 @app.route("/oauth2callback")
 def authorize():
-    # ... Változatlan ...
     token = oauth.google.authorize_access_token()
     user_info = oauth.google.get("userinfo").json()
     session["google_token"] = token
@@ -176,7 +173,6 @@ def process_page_url():
 
 @app.route("/transcription-status/<job_id>")
 def transcription_status(job_id):
-    # ... Változatlan (ezt csak a Speechmatics használja) ...
     try:
         api_key = request.args.get("apiKey")
         if not api_key: return jsonify({"error": "Hiányzó API kulcs."}), 400
@@ -196,7 +192,6 @@ def transcription_status(job_id):
 
 @app.route("/translate", methods=["POST"])
 def translate():
-    # ... Változatlan ...
     try:
         srt_text = request.form.get("srtText")
         gemini_api_key = request.form.get("geminiApiKey")
@@ -210,7 +205,6 @@ def translate():
 
 @app.route("/download-srt", methods=["POST"])
 def download_srt():
-    # ... Változatlan ...
     data = request.get_json()
     srt_text = data.get("srtText")
     video_title = session.get("video_title", "subtitle")
@@ -219,9 +213,8 @@ def download_srt():
 
 @app.route("/upload-to-drive", methods=["POST"])
 def upload_to_drive():
-    # ... Változatlan ...
     if "google_token" not in session: return jsonify({"error": "Nincs Google bejelentkezés."}), 401
-    creds = get_credentials() # Ehhez kell egy get_credentials segédfüggvény
+    creds = get_credentials()
     service = build("drive", "v3", credentials=creds)
     data = request.get_json()
     srt_text = data.get("srtText")
@@ -233,7 +226,6 @@ def upload_to_drive():
     return jsonify({"success": True})
 
 def get_credentials():
-    # ... Változatlan ...
     from google.oauth2.credentials import Credentials
     token = session.get("google_token")
     return Credentials(token["access_token"], refresh_token=token.get("refresh_token"), client_id=os.getenv("GOOGLE_CLIENT_ID"), client_secret=os.getenv("GOOGLE_CLIENT_SECRET"), token_uri="https://oauth2.googleapis.com/token")
@@ -258,4 +250,3 @@ def download_video():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
-
