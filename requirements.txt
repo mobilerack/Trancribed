@@ -6,7 +6,7 @@ authlib
 speechmatics-python
 httpx
 google-generativeai
-yt-dlp==2025.1.15
+yt-dlp
 Flask-CORS
 requests==2.32.3
 boto3==1.35.27
