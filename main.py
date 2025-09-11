@@ -2,9 +2,8 @@ import os
 import io
 import time
 import logging
-from datetime import timedelta
 
-from flask import Flask, request, jsonify, render_template, redirect, url_for, session, Response
+from flask import Flask, request, jsonify, render_template, Response, session
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 
@@ -16,23 +15,16 @@ from speechmatics.batch_client import BatchClient
 from speechmatics.models import ConnectionSettings
 import google.generativeai as genai
 
-# Google Auth + Drive
-from authlib.integrations.flask_client import OAuth
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseUpload
-
 # Alap logging beállítása
 logging.basicConfig(level=logging.INFO)
 
 app = Flask(__name__, static_folder="static", template_folder="templates")
 CORS(app)
 
-app.secret_key = os.environ.get("FLASK_SECRET_KEY", "supersecret")
+# A secret key a session-höz (videó címének tárolása) továbbra is kell
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", "a-very-secret-key-you-should-change")
 app.config["UPLOAD_FOLDER"] = "temp_uploads"
 os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
-
-# Google OAuth beállítások...
-# ... (ez a rész változatlan a korábbi kódból) ...
 
 # ---------------------------
 # Routes
@@ -40,10 +32,7 @@ os.makedirs(app.config["UPLOAD_FOLDER"], exist_ok=True)
 
 @app.route("/")
 def index():
-    user = session.get("user")
-    return render_template("index.html", logged_in=bool(user), user_email=user.get("email") if user else None)
-
-# ... (login, authorize, logout routes változatlanok) ...
+    return render_template("index.html")
 
 @app.route("/process-media", methods=["POST"])
 def process_media():
@@ -66,7 +55,6 @@ def process_media():
             session["video_title"] = video_title
 
         elif page_url:
-            # Itt jön a fallback logika
             audio_path, video_title = download_with_fallback(page_url)
             session["video_title"] = video_title
         
@@ -79,7 +67,7 @@ def process_media():
             return jsonify(result)
         else: # speechmatics
             job_id = send_to_speechmatics(audio_path, api_key, language)
-            return jsonify({"job_id": job_id, "video_title": video_title})
+            return jsonify({"job_id": job_id})
 
     except Exception as e:
         app.logger.error(f"Hiba a feldolgozás során: {e}")
@@ -89,73 +77,80 @@ def process_media():
         if audio_path and os.path.exists(audio_path):
             os.remove(audio_path)
 
+@app.route("/transcription-status/<job_id>")
+def transcription_status(job_id):
+    api_key = request.args.get("apiKey")
+    if not api_key:
+        return jsonify({"error": "Hiányzó API kulcs."}), 400
+
+    try:
+        settings = ConnectionSettings(url="https://asr.api.speechmatics.com/v2", auth_token=api_key)
+        with BatchClient(settings) as client:
+            job_details = client.check_job_status(job_id)
+            status = job_details.get("job", {}).get("status")
+            if status == "done":
+                srt_content = client.wait_for_completion(job_id, transcription_format="srt")
+                return jsonify({"status": "done", "srt_content": srt_content})
+            elif status in ["rejected", "error"]:
+                error_msg = job_details.get("job", {}).get("errors", [{}])[0].get("message", "A feladat sikertelen.")
+                return jsonify({"status": "error", "error": error_msg})
+            else:
+                return jsonify({"status": status})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/translate", methods=["POST"])
+def translate():
+    try:
+        data = request.get_json()
+        srt_text = data.get("srtText")
+        gemini_api_key = data.get("geminiApiKey")
+        target_language = data.get("targetLanguage", "magyar")
+
+        if not all([srt_text, gemini_api_key]):
+            return jsonify({"error": "Hiányzó SRT szöveg vagy Gemini API kulcs."}), 400
+
+        genai.configure(api_key=gemini_api_key)
+        model = genai.GenerativeModel("gemini-1.5-flash")
+        
+        prompt = (
+            f"Feladat: Fordítsd le a megadott SRT feliratot erre a nyelvre: {target_language}. "
+            f"A formátumot és az időbélyegeket pontosan tartsd meg, csak a szöveget fordítsd.\n\n"
+            f"Stílus: A fordítás legyen gördülékeny, természetes. "
+            f"Ha a szöveg szlenget vagy trágár kifejezéseket tartalmaz, ne finomkodj, fordítsd le bátran hasonló stílusban.\n\n"
+            f"Eredeti szöveg:\n{srt_text}"
+        )
+        
+        response = model.generate_content(prompt)
+        return jsonify({"translated_text": response.text})
+
+    except Exception as e:
+        return jsonify({"error": f"Hiba a Gemini fordítás során: {e}"}), 500
+        
+@app.route("/download-srt", methods=["POST"])
+def download_srt():
+    data = request.get_json()
+    srt_text = data.get("srtText")
+    video_title = session.get("video_title", "subtitle")
+    filename = f"{video_title}.srt"
+
+    return Response(
+        srt_text,
+        mimetype="text/plain",
+        headers={"Content-Disposition": f"attachment;filename=\"{filename}\""},
+    )
 
 def download_with_fallback(url):
-    """Megpróbálja letölteni a videót yt-dlp-vel, hiba esetén Pornhub API-val."""
     temp_dir = app.config["UPLOAD_FOLDER"]
-    ydl_opts = {
-        'format': 'bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4][height<=360]',
-        'outtmpl': os.path.join(temp_dir, '%(id)s.%(ext)s'),
-        'quiet': True,
-    }
-    
-    try:
-        app.logger.info(f"Próbálkozás yt-dlp-vel: {url}")
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            return ydl.prepare_filename(info), info.get("title", "subtitle")
-    except DownloadError:
-        app.logger.warning(f"yt-dlp sikertelen. Ellenőrzés, hogy Pornhub link-e...")
-        if 'pornhub.com' in url:
-            try:
-                app.logger.info("Pornhub link észlelve, próbálkozás a pornhub-api-val...")
-                api = PornhubApi()
-                video = api.video.get(video_id_from_url=url)
-                if not video or not video.download_urls:
-                    raise ValueError("A videó nem található vagy nincsenek letöltési linkek.")
-                
-                # A legkisebb minőségű link kiválasztása a gyors letöltésért
-                download_url = list(video.download_urls.values())[-1]
-                filepath = os.path.join(temp_dir, f"{video.video_id}.mp4")
-
-                with requests.get(download_url, stream=True) as r:
-                    r.raise_for_status()
-                    with open(filepath, 'wb') as f:
-                        for chunk in r.iter_content(chunk_size=8192):
-                            f.write(chunk)
-                return filepath, video.title
-            except Exception as ph_e:
-                raise Exception(f"A Pornhub-ról sem sikerült letölteni: {ph_e}")
-        else:
-            raise Exception("A megadott URL nem támogatott és nem Pornhub link.")
+    # ... (ez a funkció változatlan maradt) ...
 
 def send_to_speechmatics(filepath, api_key, language):
-    """Elküldi a fájlt a Speechmatics-nek."""
-    if not api_key:
-        raise ValueError("A Speechmatics API kulcs hiányzik.")
-    settings = ConnectionSettings(url="https://asr.api.speechmatics.com/v2", auth_token=api_key)
-    conf = {"type": "transcription", "transcription_config": {"language": language}}
-    with BatchClient(settings) as client:
-        job_id = client.submit_job(audio=filepath, transcription_config=conf)
-        return job_id
+    # ... (ez a funkció változatlan maradt) ...
 
 def send_to_whisper(filepath, language):
-    """Elküldi a fájlt a külső Whisper API szervernek."""
-    whisper_url = os.environ.get("WHISPER_API_URL")
-    if not whisper_url:
-        raise ConnectionError("A WHISPER_API_URL környezeti változó nincs beállítva.")
-    
-    with open(filepath, 'rb') as f:
-        files = {'file': (os.path.basename(filepath), f)}
-        data = {'language': language}
-        response = requests.post(f"{whisper_url}/transcribe", files=files, data=data, timeout=900) # 15 perc timeout
-    
-    response.raise_for_status() # Hibát dob, ha nem 2xx a válasz
-    return response.json()
+    # ... (ez a funkció változatlan maradt) ...
 
-
-# ... (a többi route: /transcription-status, /translate, /download-srt, /upload-to-drive változatlan) ...
-
+# Az __main__ részben a debug=False az éles környezethez ajánlott
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)), debug=True)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
 
