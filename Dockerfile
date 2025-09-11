@@ -24,4 +24,5 @@ COPY . .
 # 6. lépés: Az indítási parancs (CMD)
 # Ez a parancs fog lefutni, amikor a Render elindítja a konténeredet.
 # Gunicorn-t használunk, és a ${PORT} változóval a Render által megadott porton indítjuk el.
-CMD ["gunicorn", "--worker-tmp-dir", "/dev/shm", "--bind", "0.0.0.0:${PORT}", "main:app"]
+CMD gunicorn --worker-tmp-dir /dev/shm --bind 0.0.0.0:${PORT} main:app
+
