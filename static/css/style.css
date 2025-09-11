@@ -1,0 +1,196 @@
+/* --- Változók: A színeket és méreteket itt tudod könnyen átírni --- */
+:root {
+    --primary-color: #007bff;
+    --primary-hover: #0056b3;
+    --background-color: #f8f9fa;
+    --surface-color: #ffffff;
+    --text-color: #212529;
+    --border-color: #dee2e6;
+    --success-color: #28a745;
+    --warn-color: #ffc107;
+    --error-color: #dc3545;
+    --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --border-radius: 8px;
+    --box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+/* Sötét mód beállításai, ha a felhasználó rendszere sötétre van állítva */
+@media (prefers-color-scheme: dark) {
+    :root {
+        --primary-color: #0d6efd;
+        --primary-hover: #0b5ed7;
+        --background-color: #121212;
+        --surface-color: #1e1e1e;
+        --text-color: #e9ecef;
+        --border-color: #495057;
+    }
+}
+
+
+/* --- Alap stílusok --- */
+body {
+    font-family: var(--font-family);
+    background-color: var(--background-color);
+    color: var(--text-color);
+    margin: 0;
+    padding: 20px;
+    line-height: 1.6;
+}
+
+.container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 20px;
+    background-color: var(--surface-color);
+    border-radius: var(--border-radius);
+    box-shadow: var(--box-shadow);
+}
+
+header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid var(--border-color);
+    padding-bottom: 15px;
+    margin-bottom: 20px;
+}
+
+h1, h2, h3 {
+    margin-top: 0;
+}
+
+h1 {
+    font-size: 1.8em;
+}
+
+h2 {
+    font-size: 1.4em;
+    border-bottom: 1px solid var(--border-color);
+    padding-bottom: 10px;
+    margin-bottom: 20px;
+}
+
+/* --- Kétoszlopos elrendezés --- */
+.grid-container {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 30px;
+}
+
+/* Mobil nézetben egymás alá kerülnek az oszlopok */
+@media (max-width: 900px) {
+    .grid-container {
+        grid-template-columns: 1fr;
+    }
+}
+
+
+/* --- Beviteli mezők és gombok --- */
+.input-group {
+    margin-bottom: 15px;
+}
+
+.input-group label {
+    display: block;
+    margin-bottom: 5px;
+    font-weight: bold;
+}
+
+input[type="text"],
+input[type="password"],
+input[type="file"],
+select,
+textarea {
+    width: 100%;
+    padding: 10px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius);
+    background-color: var(--background-color);
+    color: var(--text-color);
+    box-sizing: border-box; /* Fontos, hogy a padding ne növelje a szélességet */
+}
+
+textarea {
+    resize: vertical; /* Csak függőlegesen átméretezhető */
+}
+
+.button, button {
+    display: inline-block;
+    padding: 10px 20px;
+    border: none;
+    border-radius: var(--border-radius);
+    color: #fff;
+    background-color: var(--primary-color);
+    text-decoration: none;
+    cursor: pointer;
+    font-size: 1em;
+    transition: background-color 0.2s ease;
+    margin-right: 10px;
+    margin-top: 10px;
+}
+
+.button:hover, button:hover {
+    background-color: var(--primary-hover);
+}
+
+.primary-button {
+    font-weight: bold;
+    padding: 12px 25px;
+}
+.primary-button:disabled {
+    background-color: #6c757d;
+    cursor: not-allowed;
+}
+
+.button-group {
+    margin-top: 15px;
+}
+
+
+/* --- Státusz üzenetek --- */
+#statusBox {
+    margin-bottom: 20px;
+}
+
+.status {
+    padding: 15px;
+    border-radius: var(--border-radius);
+    color: #fff;
+    opacity: 0.9;
+}
+.status-info { background-color: var(--primary-color); }
+.status-success { background-color: var(--success-color); }
+.status-warn { background-color: var(--warn-color); color: #000; }
+.status-error { background-color: var(--error-color); }
+
+
+/* --- Fülek (Tabs) --- */
+.tabs {
+    border-bottom: 1px solid var(--border-color);
+    margin-bottom: 15px;
+}
+.tab-link {
+    background-color: transparent;
+    border: none;
+    padding: 10px 15px;
+    cursor: pointer;
+    color: var(--text-color);
+    border-bottom: 3px solid transparent;
+}
+.tab-link.active {
+    border-bottom: 3px solid var(--primary-color);
+    font-weight: bold;
+}
+.tab-content {
+    display: none;
+}
+.tab-content.active {
+    display: block;
+}
+
+/* --- Egyéb segédosztályok --- */
+.separator {
+    text-align: center;
+    font-weight: bold;
+    margin: 10px 0;
+}
