@@ -8,84 +8,95 @@
 </head>
 <body>
     <div class="container">
-        <h1>🎬 Videó Átirat és Fordítás</h1>
+        <header>
+            <h1>🎬 Videó Átirat és Fordítás</h1>
+            <div class="auth-box">
+                {% if not logged_in %}
+                    <a href="{{ url_for('login') }}" class="button">Google Bejelentkezés</a>
+                {% else %}
+                    <span>Bejelentkezve: <strong>{{ user_email }}</strong></span>
+                    <a href="{{ url_for('logout') }}" class="button">Kijelentkezés</a>
+                {% endif %}
+            </div>
+        </header>
 
-        <div class="auth-box">
-            {% if not logged_in %}
-                <a href="{{ url_for('login') }}">
-                    <button>Bejelentkezés Google-lel</button>
-                </a>
-            {% else %}
-                <p>Bejelentkezve: <strong>{{ user_email }}</strong> | <a href="{{ url_for('logout') }}">Kijelentkezés</a></p>
-            {% endif %}
-        </div>
-        
         <div id="statusBox"></div>
 
         <div class="grid-container">
-            <div class="box">
+            <div class="grid-item">
                 <h2>Beállítások</h2>
+                <div class="input-group">
+                    <label for="speechmaticsApiKey">Speechmatics API kulcs:</label>
+                    <input type="password" id="speechmaticsApiKey" placeholder="Írd be a Speechmatics API kulcsod...">
+                </div>
+                <div class="input-group">
+                    <label for="geminiApiKey">Gemini API kulcs:</label>
+                    <input type="password" id="geminiApiKey" placeholder="Írd be a Gemini API kulcsod...">
+                </div>
+
+                <h2>Forrás megadása</h2>
+                 <div class="input-group">
+                    <label for="videoUrl">Videó URL:</label>
+                    <input type="text" id="videoUrl" placeholder="https://...">
+                </div>
+                <p class="separator">VAGY</p>
+                 <div class="input-group">
+                    <label for="videoFile">Tölts fel egy fájlt:</label>
+                    <input type="file" id="videoFile" accept="video/*,audio/*">
+                </div>
                 
-                {% if transcription_service == 'speechmatics' %}
-                <label for="speechmaticsApiKey">Speechmatics API kulcs:</label>
-                <input type="password" id="speechmaticsApiKey" placeholder="Add meg a Speechmatics API kulcsot">
-                {% endif %}
-                
-                <label for="geminiApiKey">Gemini API kulcs:</label>
-                <input type="password" id="geminiApiKey" placeholder="Add meg a Gemini API kulcsot">
-                <input type="hidden" id="activeService" value="{{ transcription_service }}">
+                <h2>Feldolgozás</h2>
+                 <div class="input-group">
+                    <label for="language">Forrás nyelve:</label>
+                    <select id="language">
+                        <option value="en">Angol</option>
+                        <option value="hu">Magyar</option>
+                        <option value="de">Német</option>
+                        <option value="fr">Francia</option>
+                        <option value="es">Spanyol</option>
+                    </select>
+                </div>
+                 <div class="input-group">
+                    <label for="transcriptionService">Átíró szolgáltatás:</label>
+                    <select id="transcriptionService">
+                      <option value="speechmatics" selected>Speechmatics</option>
+                      <option value="whisper">Whisper (külső szerver)</option>
+                    </select>
+                </div>
+                <button onclick="startTranscription()" class="button primary-button">🚀 Átirat Indítása</button>
             </div>
 
-            <div class="box">
-                <h2>Videó feldolgozása</h2>
-                <input type="url" id="videoUrl" placeholder="Videó URL (YouTube, Pornhub, stb.)">
-                <label for="language">Válaszd ki a videó nyelvét:</label>
-                <select id="language" name="language">
-                    <option value="en">Angol</option>
-                    <option value="hu">Magyar</option>
-                    <option value="de">Német</option>
-                    <option value="fr">Francia</option>
-                    <option value="es">Spanyol</option>
-                    <option value="it">Olasz</option>
-                    <option value="ru">Orosz</option>
-                    <option value="ja">Japán</option>
-                    <option value="pl">Lengyel</option>
-                    <option value="ro">Román</option>
-                    <option value="uk">Ukrán</option>
-                    <option value="zh">Kínai</option>
-                </select>
-                <button onclick="startTranscription()">Átirat indítása</button>
-            </div>
+            <div class="grid-item">
+                <h2>Eredmények</h2>
+                <div class="tabs">
+                    <button class="tab-link active" onclick="openTab(event, 'transcription')">Átirat (SRT)</button>
+                    <button class="tab-link" onclick="openTab(event, 'translation')">Fordítás</button>
+                </div>
 
-            <div class="box full-width">
-                <h2>Átirat (SRT)</h2>
-                <textarea id="srtText" rows="10" placeholder="Itt jelenik meg az eredeti átirat..."></textarea>
-            </div>
+                <div id="transcription" class="tab-content active">
+                    <h3>Eredeti átirat</h3>
+                    <textarea id="srtText" rows="15" placeholder="Az átirat itt fog megjelenni..."></textarea>
+                </div>
 
-            <div class="box">
-                <h2>Fordítás</h2>
-                <button onclick="translateSrt()">🌐 Fordítás Gemini-vel</button>
-            </div>
-
-            <div class="box">
-                <h2>Videó letöltése</h2>
-                <label for="resolution">Felbontás:</label>
-                <select id="resolution">
-                    <option value="360">360p</option>
-                    <option value="480">480p</option>
-                    <option value="720">720p</option>
-                    <option value="1080">1080p</option>
-                </select>
-                <button onclick="downloadVideo()">🎬 Videó letöltése</button>
-            </div>
-
-            <div class="box full-width">
-                <h2>Fordított felirat</h2>
-                <textarea id="translatedText" rows="10" placeholder="Itt jelenik meg a lefordított felirat..."></textarea>
-                <button onclick="downloadSrt()">⬇️ Fordított felirat letöltése</button>
-                {% if logged_in %}
-                <button onclick="uploadToDrive()">☁️ Feltöltés Google Drive-ra</button>
-                {% endif %}
+                <div id="translation" class="tab-content">
+                    <h3>Fordítás</h3>
+                     <div class="input-group">
+                        <label for="targetLanguage">Célnyelv:</label>
+                        <select id="targetLanguage">
+                            <option value="hu">Magyar</option>
+                            <option value="en">Angol</option>
+                            <option value="de">Német</option>
+                            <option value="fr">Francia</option>
+                            <option value="es">Spanyol</option>
+                        </select>
+                    </div>
+                    <button onclick="translateSrt()" class="button">🌐 Fordítás</button>
+                    <textarea id="translatedText" rows="15" placeholder="A fordított szöveg itt fog megjelenni..."></textarea>
+                    <div class="button-group">
+                        <button onclick="downloadSrt()" class="button">⬇️ Felirat letöltése</button>
+                        <button onclick="uploadToDrive()" class="button">☁️ Feltöltés Google Drive-ra</button>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
