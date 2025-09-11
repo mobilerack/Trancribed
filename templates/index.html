@@ -10,14 +10,6 @@
     <div class="container">
         <header>
             <h1>🎬 Videó Átirat és Fordítás</h1>
-            <div class="auth-box">
-                {% if not logged_in %}
-                    <a href="{{ url_for('login') }}" class="button">Google Bejelentkezés</a>
-                {% else %}
-                    <span>Bejelentkezve: <strong>{{ user_email }}</strong></span>
-                    <a href="{{ url_for('logout') }}" class="button">Kijelentkezés</a>
-                {% endif %}
-            </div>
         </header>
 
         <div id="statusBox"></div>
@@ -85,16 +77,12 @@
                         <select id="targetLanguage">
                             <option value="hu">Magyar</option>
                             <option value="en">Angol</option>
-                            <option value="de">Német</option>
-                            <option value="fr">Francia</option>
-                            <option value="es">Spanyol</option>
                         </select>
                     </div>
                     <button onclick="translateSrt()" class="button">🌐 Fordítás</button>
                     <textarea id="translatedText" rows="15" placeholder="A fordított szöveg itt fog megjelenni..."></textarea>
                     <div class="button-group">
                         <button onclick="downloadSrt()" class="button">⬇️ Felirat letöltése</button>
-                        <button onclick="uploadToDrive()" class="button">☁️ Feltöltés Google Drive-ra</button>
                     </div>
                 </div>
             </div>
